@@ -1,6 +1,15 @@
+# Tesseract OCR
 tesseract-ocr
 tesseract-ocr-fra
 tesseract-ocr-eng
+
+# Poppler (PDF to Image)
 poppler-utils
-libgl1-mesa-glx
-libglib2.0-0
+
+# Image processing
+libsm6
+libxext6
+libxrender-dev
+
+# Dev tools
+build-essential
