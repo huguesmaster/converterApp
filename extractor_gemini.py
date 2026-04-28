@@ -253,7 +253,7 @@ Si aucune transaction : {"transactions":[]}"""
             )
             self.logger.success(
                 "Gemini configuré avec succès",
-                f"Modèle : gemini-1.5-flash | Mode : {mode}"
+                f"Modèle : gemini-2.5-flash-lite | Mode : {mode}"
             )
         except Exception as e:
             self.logger.error(
