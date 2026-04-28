@@ -61,7 +61,7 @@ RETOURNER UNIQUEMENT ce JSON sans markdown :
 
         # Modèle TEXT uniquement (beaucoup moins cher)
         self.model = genai.GenerativeModel(
-            model_name="gemini-1.5-flash",
+            model_name="gemini-3.1-flash-lite-preview",
             generation_config=genai.GenerationConfig(
                 temperature=0,
                 top_p=1,
