@@ -1,508 +1,620 @@
+"""
+Extracteur Hybride : pdfplumber (texte) + Gemini (structuration)
+Stratégie d'optimisation des tokens :
+  1. pdfplumber extrait le texte brut de chaque page
+  2. Gemini reçoit du TEXTE (pas des images)
+  3. Gemini structure les données en JSON propre
+  → ~85% de tokens économisés vs vision pure
+"""
+
+import google.generativeai as genai
 import pdfplumber
 import pandas as pd
+import json
 import re
 import io
-import os
-from PIL import Image
-
-try:
-    import pytesseract
-    from pdf2image import convert_from_bytes
-    import cv2
-    import numpy as np
-    OCR_AVAILABLE = True
-except ImportError:
-    OCR_AVAILABLE = False
+import time
+import hashlib
 
 
-class BankStatementExtractor:
+class GeminiExtractor:
     """
-    Extracteur de relevés bancaires PDF.
-    Supporte les PDF natifs et les PDF scannés (OCR).
-    Compatible Financial House S.A et autres formats.
+    Extracteur hybride pdfplumber + Gemini Text.
+
+    Flux :
+    PDF bytes
+      └─► pdfplumber  →  texte brut par page
+            └─► Gemini Text  →  JSON structuré
+                  └─► DataFrame pandas
     """
 
-    MONTH_MAP = {
-        'jan': '01', 'feb': '02', 'mar': '03', 'apr': '04',
-        'may': '05', 'jun': '06', 'jul': '07', 'aug': '08',
-        'sep': '09', 'oct': '10', 'nov': '11', 'dec': '12',
-        'janvier': '01', 'février': '02', 'mars': '03',
-        'avril': '04', 'mai': '05', 'juin': '06',
-        'juillet': '07', 'août': '08', 'septembre': '09',
-        'octobre': '10', 'novembre': '11', 'décembre': '12'
-    }
+    # ── Prompt optimisé pour texte brut ──────────────
+    # Compact = moins de tokens dans le prompt système
+    SYSTEM_PROMPT = """Tu es un extracteur de relevés bancaires.
+On te donne le texte brut d'une page de relevé Financial House S.A.
 
-    IGNORE_PATTERNS = [
-        r'financial house', r'fh sa', r'historique compte',
-        r'branch id', r'account id', r'periode du',
-        r'print date', r'page num', r'printed by',
-        r'working date', r'br\.net', r'^totaux',
-        r'ibantio', r'bdjoko', r'gtakeu', r'ideynou',
-        r'mmodjo', r'ndjiemoum'
-    ]
+COLONNES DU TABLEAU (dans l'ordre d'apparition) :
+Date | Batch/Ref | Libellé | D.Valeur | Débit | Crédit | Solde
 
-    def __init__(self, progress_callback=None):
-        """
-        Args:
-            progress_callback: fonction(step: int, message: str)
-                               pour mettre à jour la progression
-        """
+RÈGLES :
+- Extraire TOUTES les lignes de transaction
+- Ignorer : en-têtes (Date/Batch/Ref/Libellé...), totaux (TOTAUX), 
+  infos banque (Branch ID, Account ID, Printed By, Working Date, Page Num)
+- Inclure : "Solde d'ouverture" et "Solde de clôture"
+- Montants : supprimer les espaces → "24 553 342" devient 24553342
+- Si Débit vide → null, si Crédit vide → null
+- Les frais (SMS Pack, TVA, Historique) sont toujours des DÉBITS
+
+RETOURNER UNIQUEMENT ce JSON sans markdown :
+{"transactions":[{"date":"JJ/MM/AAAA","reference":"XXX/","libelle":"...","date_valeur":"JJ/MM/AAAA","debit":null_ou_nombre,"credit":null_ou_nombre,"solde":nombre}]}"""
+
+    # Nombre max de tokens estimés par page
+    # (pour décider si on chunke ou pas)
+    MAX_TOKENS_PER_PAGE = 3000
+
+    def __init__(self, api_key: str, progress_callback=None):
+        self.api_key = api_key
         self.progress_callback = progress_callback
+        self._cache = {}  # Cache pour éviter de retraiter
+
+        genai.configure(api_key=api_key)
+
+        # Modèle TEXT uniquement (beaucoup moins cher)
+        self.model = genai.GenerativeModel(
+            model_name="gemini-1.5-flash",
+            generation_config=genai.GenerationConfig(
+                temperature=0,
+                top_p=1,
+                top_k=1,
+                max_output_tokens=4096,
+            ),
+            # Paramètres de sécurité permissifs pour données financières
+            safety_settings=[
+                {"category": "HARM_CATEGORY_HARASSMENT",
+                 "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_HATE_SPEECH",
+                 "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                 "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+                 "threshold": "BLOCK_NONE"},
+            ]
+        )
 
     def _update_progress(self, step: int, message: str):
         if self.progress_callback:
             self.progress_callback(step, message)
 
-    # ------------------------------------------------------------------
+    # ──────────────────────────────────────────────────
+    # ÉTAPE 1 : EXTRACTION TEXTE VIA pdfplumber
+    # ──────────────────────────────────────────────────
+
+    def _extract_text_from_pdf(
+        self, pdf_bytes: bytes
+    ) -> list[dict]:
+        """
+        Extrait le texte brut de chaque page avec pdfplumber.
+        Retourne une liste de dicts {page_num, text, char_count}.
+
+        C'est cette étape qui remplace l'envoi d'images à Gemini.
+        """
+        pages_text = []
+
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            total = len(pdf.pages)
+
+            for i, page in enumerate(pdf.pages):
+                progress = 5 + int((i / total) * 30)
+                self._update_progress(
+                    progress,
+                    f"📄 Extraction texte page {i+1}/{total}..."
+                )
+
+                # Méthode 1 : extraction directe du texte
+                raw_text = page.extract_text(
+                    x_tolerance=3,
+                    y_tolerance=3,
+                    layout=True,          # Préserve la mise en page
+                    x_density=7.25,
+                    y_density=13,
+                )
+
+                # Méthode 2 : si texte vide, essayer par mots
+                if not raw_text or len(raw_text.strip()) < 50:
+                    raw_text = self._extract_text_by_words(page)
+
+                if raw_text:
+                    # Nettoyer le texte avant envoi à Gemini
+                    cleaned = self._preprocess_text(raw_text)
+                    pages_text.append({
+                        'page_num':   i + 1,
+                        'text':       cleaned,
+                        'char_count': len(cleaned),
+                        'total_pages': total,
+                    })
+
+        return pages_text
+
+    def _extract_text_by_words(self, page) -> str:
+        """
+        Extraction par mots avec reconstruction des lignes.
+        Utilisé quand extract_text() donne un résultat vide.
+        """
+        words = page.extract_words(
+            x_tolerance=4,
+            y_tolerance=4,
+            keep_blank_chars=False,
+        )
+        if not words:
+            return ''
+
+        # Grouper par ligne (position Y)
+        lines = {}
+        for w in words:
+            y = round(float(w['top']) / 4) * 4
+            lines.setdefault(y, []).append(w)
+
+        # Reconstruire les lignes dans l'ordre
+        result_lines = []
+        for y in sorted(lines.keys()):
+            line_words = sorted(lines[y], key=lambda w: w['x0'])
+            line = ' '.join(w['text'] for w in line_words)
+            result_lines.append(line)
+
+        return '\n'.join(result_lines)
+
+    def _preprocess_text(self, text: str) -> str:
+        """
+        Nettoie le texte avant envoi à Gemini pour réduire les tokens.
+
+        Actions :
+        - Supprime les lignes vides multiples
+        - Supprime les lignes inutiles (logo, adresse...)
+        - Normalise les espaces
+        """
+        lines = text.split('\n')
+        cleaned_lines = []
+
+        # Patterns à supprimer du texte
+        skip_patterns = [
+            r'^\s*$',                          # Lignes vides
+            r'financial house s\.?a',          # Nom banque
+            r'fh sa\s*-\s*ndjiemoum',          # Agence
+            r'historique compte client',       # Titre
+            r'branch id\s*:',                  # Info compte
+            r'account id\s*:',
+            r'print date\s*:',
+            r'page num\s*:',
+            r'printed by\s*:',
+            r'working date\s*:',
+            r'br\.net ver',
+            r'^\s*ibantio\s*$',
+            r'^\s*bdjoko\s*$',
+            r'^\s*gtakeu\s*$',
+            r'^\s*ideynou\s*$',
+            r'^\s*mmodjo\s*$',
+        ]
+
+        prev_was_empty = False
+        for line in lines:
+            line_stripped = line.strip()
+            line_lower = line_stripped.lower()
+
+            # Vérifier si la ligne doit être ignorée
+            should_skip = False
+            for pattern in skip_patterns:
+                if re.search(pattern, line_lower):
+                    should_skip = True
+                    break
+
+            if should_skip:
+                continue
+
+            # Éviter les lignes vides consécutives
+            if not line_stripped:
+                if not prev_was_empty:
+                    cleaned_lines.append('')
+                prev_was_empty = True
+            else:
+                cleaned_lines.append(line_stripped)
+                prev_was_empty = False
+
+        return '\n'.join(cleaned_lines).strip()
+
+    # ──────────────────────────────────────────────────
+    # ÉTAPE 2 : COMPTAGE ET GESTION DES TOKENS
+    # ──────────────────────────────────────────────────
+
+    def _estimate_tokens(self, text: str) -> int:
+        """
+        Estimation rapide du nombre de tokens.
+        Règle approximative : 1 token ≈ 4 caractères en français.
+        """
+        return len(text) // 4
+
+    def _should_chunk(self, text: str) -> bool:
+        """
+        Détermine si le texte doit être découpé en chunks
+        pour éviter de dépasser les limites de tokens.
+        """
+        estimated = self._estimate_tokens(text)
+        return estimated > self.MAX_TOKENS_PER_PAGE
+
+    def _split_into_chunks(
+        self, text: str, max_chars: int = 8000
+    ) -> list[str]:
+        """
+        Découpe un texte long en chunks logiques.
+        Découpe sur les lignes vides pour ne pas couper
+        au milieu d'une transaction.
+        """
+        if len(text) <= max_chars:
+            return [text]
+
+        chunks = []
+        lines = text.split('\n')
+        current_chunk = []
+        current_len = 0
+
+        for line in lines:
+            line_len = len(line) + 1  # +1 pour le \n
+
+            if current_len + line_len > max_chars and current_chunk:
+                chunks.append('\n'.join(current_chunk))
+                current_chunk = [line]
+                current_len = line_len
+            else:
+                current_chunk.append(line)
+                current_len += line_len
+
+        if current_chunk:
+            chunks.append('\n'.join(current_chunk))
+
+        return chunks
+
+    def _get_cache_key(self, text: str) -> str:
+        """Génère une clé de cache MD5 pour un texte."""
+        return hashlib.md5(text.encode()).hexdigest()
+
+    # ──────────────────────────────────────────────────
+    # ÉTAPE 3 : APPEL GEMINI OPTIMISÉ
+    # ──────────────────────────────────────────────────
+
+    def _call_gemini(
+        self, text: str, page_info: str = ""
+    ) -> list[dict]:
+        """
+        Appelle Gemini avec du TEXTE (pas d'image).
+        Gère le cache, les retries et le rate limiting.
+
+        Returns:
+            Liste de transactions extraites
+        """
+        # Vérifier le cache
+        cache_key = self._get_cache_key(text)
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+
+        # Si le texte est trop long → découper
+        if self._should_chunk(text):
+            return self._call_gemini_chunked(text, page_info)
+
+        # Construire le prompt utilisateur
+        # (le texte brut de la page)
+        user_prompt = f"""Voici le texte brut de la page {page_info} :
+
+---
+{text}
+---
+
+Extrais toutes les transactions et retourne le JSON."""
+
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                response = self.model.generate_content(
+                    [self.SYSTEM_PROMPT, user_prompt],
+                    request_options={"timeout": 30}
+                )
+
+                transactions = self._parse_response(response.text)
+
+                # Mettre en cache
+                self._cache[cache_key] = transactions
+                return transactions
+
+            except Exception as e:
+                error_str = str(e)
+
+                # Rate limiting → attendre
+                if any(code in error_str
+                       for code in ['429', 'quota', 'RESOURCE_EXHAUSTED']):
+                    wait = (attempt + 1) * 15
+                    self._update_progress(
+                        -1,
+                        f"⏳ Limite API Gemini — attente {wait}s..."
+                    )
+                    time.sleep(wait)
+                    continue
+
+                # Erreur de contexte trop long
+                if 'context' in error_str.lower() or '413' in error_str:
+                    # Réessayer avec chunking
+                    return self._call_gemini_chunked(text, page_info)
+
+                print(f"Erreur Gemini ({attempt+1}/{max_retries}): {e}")
+                if attempt == max_retries - 1:
+                    return []
+                time.sleep(3)
+
+        return []
+
+    def _call_gemini_chunked(
+        self, text: str, page_info: str = ""
+    ) -> list[dict]:
+        """
+        Traite un texte long par chunks successifs.
+        Chaque chunk est envoyé séparément à Gemini.
+        """
+        chunks = self._split_into_chunks(text, max_chars=6000)
+        all_transactions = []
+
+        for i, chunk in enumerate(chunks):
+            self._update_progress(
+                -1,
+                f"🔄 Chunk {i+1}/{len(chunks)} de {page_info}..."
+            )
+
+            chunk_info = f"{page_info} (partie {i+1}/{len(chunks)})"
+            transactions = self._call_gemini(chunk, chunk_info)
+            all_transactions.extend(transactions)
+
+            # Pause entre chunks
+            if i < len(chunks) - 1:
+                time.sleep(1)
+
+        return all_transactions
+
+    # ──────────────────────────────────────────────────
+    # ÉTAPE 4 : PARSING DE LA RÉPONSE GEMINI
+    # ──────────────────────────────────────────────────
+
+    def _parse_response(self, response_text: str) -> list[dict]:
+        """
+        Parse la réponse JSON de Gemini.
+        Robuste aux formats variés.
+        """
+        if not response_text:
+            return []
+
+        text = response_text.strip()
+
+        # Supprimer les balises markdown si présentes
+        text = re.sub(r'```json\s*', '', text)
+        text = re.sub(r'```\s*', '', text)
+        text = text.strip()
+
+        # Extraire le JSON
+        json_match = re.search(r'\{.*\}', text, re.DOTALL)
+        if not json_match:
+            return []
+
+        json_str = json_match.group(0)
+
+        # Tenter de parser
+        try:
+            data = json.loads(json_str)
+        except json.JSONDecodeError:
+            json_str = self._repair_json(json_str)
+            try:
+                data = json.loads(json_str)
+            except Exception:
+                return []
+
+        transactions = data.get("transactions", [])
+        if not isinstance(transactions, list):
+            return []
+
+        return [
+            t for t in
+            (self._normalize(t) for t in transactions)
+            if t is not None
+        ]
+
+    def _repair_json(self, s: str) -> str:
+        """Répare les JSON légèrement malformés."""
+        s = re.sub(r',\s*}', '}', s)
+        s = re.sub(r',\s*]', ']', s)
+        s = s.replace('None', 'null')
+        s = s.replace("'", '"')
+        return s
+
+    def _normalize(self, t: dict) -> dict:
+        """Normalise et valide une transaction."""
+        if not isinstance(t, dict):
+            return None
+
+        libelle = str(t.get('libelle', '') or '').strip()
+        if not libelle:
+            return None
+
+        return {
+            'date':        self._fmt_date(t.get('date', '')),
+            'reference':   str(t.get('reference', '') or '').strip(),
+            'libelle':     libelle,
+            'date_valeur': self._fmt_date(t.get('date_valeur', '')),
+            'debit':       self._fmt_amount(t.get('debit')),
+            'credit':      self._fmt_amount(t.get('credit')),
+            'solde':       self._fmt_amount(t.get('solde')),
+        }
+
+    def _fmt_date(self, val) -> str:
+        """Normalise une date."""
+        if not val:
+            return ''
+        s = str(val).strip()
+        if re.match(r'\d{2}/\d{2}/\d{4}', s):
+            return s[:10]
+        return s
+
+    def _fmt_amount(self, val) -> float:
+        """Convertit un montant en float ou None."""
+        if val is None or val == '' or str(val).lower() == 'null':
+            return None
+        try:
+            s = re.sub(r'[^\d.]', '', str(val).replace(' ', ''))
+            return float(s) if s else None
+        except (ValueError, TypeError):
+            return None
+
+    # ──────────────────────────────────────────────────
     # POINT D'ENTRÉE PRINCIPAL
-    # ------------------------------------------------------------------
+    # ──────────────────────────────────────────────────
 
     def extract(self, pdf_bytes: bytes) -> pd.DataFrame:
         """
-        Extrait les données d'un PDF bancaire.
+        Pipeline complet d'extraction hybride.
 
-        Args:
-            pdf_bytes: contenu du fichier PDF en bytes
+        Étapes :
+        1. pdfplumber  → texte brut par page
+        2. Gemini Text → JSON structuré par page
+        3. Consolidation → DataFrame final
 
         Returns:
-            DataFrame structuré avec les colonnes :
-            Date, Référence, Libellé, Date_Valeur, Débit, Crédit, Solde
+            DataFrame : Date, Référence, Libellé,
+                        Date_Valeur, Débit, Crédit, Solde
         """
-        self._update_progress(10, "🔍 Analyse du PDF...")
+        self._update_progress(3, "📄 Lecture du PDF...")
 
-        # Tentative 1 : extraction native (PDF texte)
-        df = self._extract_native(pdf_bytes)
+        # ── Étape 1 : Extraction texte ──
+        try:
+            pages = self._extract_text_from_pdf(pdf_bytes)
+        except Exception as e:
+            self._update_progress(10, f"❌ Erreur lecture PDF: {e}")
+            return self._empty_df()
 
-        if df is not None and len(df) >= 3:
-            self._update_progress(80, "✅ Extraction native réussie")
-            return self._finalize(df)
+        if not pages:
+            self._update_progress(10, "❌ PDF illisible ou vide")
+            return self._empty_df()
 
-        # Tentative 2 : OCR (PDF scanné)
-        if OCR_AVAILABLE:
-            self._update_progress(40, "🔍 PDF scanné — lancement OCR...")
-            df = self._extract_ocr(pdf_bytes)
-            if df is not None and not df.empty:
-                self._update_progress(80, "✅ Extraction OCR réussie")
-                return self._finalize(df)
+        total_pages = len(pages)
+        self._update_progress(
+            35,
+            f"✅ {total_pages} page(s) extraite(s) — "
+            f"envoi à Gemini..."
+        )
 
-        self._update_progress(80, "⚠️ Données partielles extraites")
+        # ── Étape 2 : Structuration via Gemini ──
+        all_transactions = []
+
+        for page_data in pages:
+            page_num  = page_data['page_num']
+            text      = page_data['text']
+            char_count = page_data['char_count']
+            tokens_est = self._estimate_tokens(text)
+
+            progress = 35 + int(
+                (page_num / total_pages) * 50
+            )
+            self._update_progress(
+                progress,
+                f"🤖 Gemini structure la page "
+                f"{page_num}/{total_pages} "
+                f"(~{tokens_est} tokens)..."
+            )
+
+            # Appel Gemini avec le texte
+            transactions = self._call_gemini(
+                text,
+                page_info=f"{page_num}/{total_pages}"
+            )
+            all_transactions.extend(transactions)
+
+            # Pause minimale entre pages
+            # (évite le rate limiting)
+            if page_num < total_pages:
+                time.sleep(0.5)
+
+        self._update_progress(88, "🔧 Construction du tableau...")
+
+        # ── Étape 3 : DataFrame ──
+        if not all_transactions:
+            self._update_progress(90, "⚠️ Aucune transaction extraite")
+            return self._empty_df()
+
+        df = self._build_dataframe(all_transactions)
+        self._update_progress(95, "✅ Extraction terminée !")
+        return df
+
+    def _build_dataframe(self, transactions: list) -> pd.DataFrame:
+        """Construit le DataFrame final depuis la liste."""
+        rows = [{
+            'Date':        t.get('date', ''),
+            'Référence':   t.get('reference', ''),
+            'Libellé':     t.get('libelle', ''),
+            'Date_Valeur': t.get('date_valeur', ''),
+            'Débit':       t.get('debit'),
+            'Crédit':      t.get('credit'),
+            'Solde':       t.get('solde'),
+        } for t in transactions]
+
+        df = pd.DataFrame(rows)
+
+        # Supprimer les vrais doublons
+        mask_solde = df['Libellé'].str.contains(
+            r'solde\s+d|solde\s+de\s+cl',
+            case=False, na=False, regex=True
+        )
+        df_normal = df[~mask_solde].drop_duplicates(
+            subset=['Date', 'Référence', 'Libellé'],
+            keep='first'
+        )
+        df_soldes = df[mask_solde]
+
+        df_final = pd.concat(
+            [df_soldes, df_normal], ignore_index=True
+        )
+
+        return df_final.reset_index(drop=True)
+
+    def _empty_df(self) -> pd.DataFrame:
         return pd.DataFrame(columns=[
             'Date', 'Référence', 'Libellé',
             'Date_Valeur', 'Débit', 'Crédit', 'Solde'
         ])
 
-    # ------------------------------------------------------------------
-    # EXTRACTION NATIVE (pdfplumber)
-    # ------------------------------------------------------------------
+    # ──────────────────────────────────────────────────
+    # MÉTRIQUES D'UTILISATION
+    # ──────────────────────────────────────────────────
+
+    def get_usage_stats(self, pages: list[dict]) -> dict:
+        """
+        Calcule les métriques d'utilisation des tokens
+        pour affichage dans l'interface.
+        """
+        total_chars  = sum(p['char_count'] for p in pages)
+        total_tokens = self._estimate_tokens(total_chars * ' ')
+        total_pages  = len(pages)
+
+        # Coût estimé Gemini Flash
+        # (prix : ~$0.075 / 1M tokens input)
+        cost_usd = (total_tokens / 1_000_000) * 0.075
+
+        # Comparaison avec le mode image
+        image_tokens_estimate = total_pages * 2000
+        image_cost_estimate = (
+            image_tokens_estimate / 1_000_000
+        ) * 0.075
 
-    def _extract_native(self, pdf_bytes: bytes):
-        rows = []
-        try:
-            with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-                total_pages = len(pdf.pages)
-                for page_num, page in enumerate(pdf.pages):
-                    progress = 10 + int((page_num / total_pages) * 50)
-                    self._update_progress(
-                        progress,
-                        f"📃 Extraction page {page_num+1}/{total_pages}"
-                    )
-
-                    # Essai tableaux structurés
-                    tables = page.extract_tables({
-                        "vertical_strategy": "lines",
-                        "horizontal_strategy": "lines",
-                        "snap_tolerance": 3,
-                        "join_tolerance": 3,
-                        "edge_min_length": 3,
-                    })
-
-                    if tables:
-                        for table in tables:
-                            rows.extend(self._process_table(table))
-                    else:
-                        # Fallback : extraction par mots + position
-                        rows.extend(self._extract_by_words(page))
-
-            return pd.DataFrame(rows) if rows else None
-
-        except Exception as e:
-            print(f"Erreur extraction native: {e}")
-            return None
-
-    def _process_table(self, table: list) -> list:
-        """Traite un tableau pdfplumber en liste de dicts."""
-        rows = []
-        pending_libelle_append = None  # pour les libellés multi-lignes
-
-        for raw_row in table:
-            if not raw_row:
-                continue
-
-            cells = [str(c).strip() if c else '' for c in raw_row]
-
-            # Ligne totalement vide
-            if all(c == '' or c == 'None' for c in cells):
-                continue
-
-            # En-tête de tableau
-            if self._is_header(cells):
-                continue
-
-            # Ligne à ignorer (en-têtes de page, etc.)
-            joined = ' '.join(cells).lower()
-            if any(re.search(p, joined) for p in self.IGNORE_PATTERNS):
-                continue
-
-            # Ligne de continuation (libellé multi-ligne)
-            # → pas de date, pas de référence, mais du texte
-            if (not cells[0] or not re.search(r'\d', cells[0])) and \
-               (len(cells) < 2 or not cells[1]):
-                text = ' '.join(c for c in cells if c)
-                if text and rows:
-                    rows[-1]['Libellé'] = (
-                        rows[-1].get('Libellé', '') + ' ' + text
-                    ).strip()
-                continue
-
-            row_dict = self._cells_to_dict(cells)
-            if row_dict:
-                rows.append(row_dict)
-
-        return rows
-
-    def _cells_to_dict(self, cells: list) -> dict:
-        """Convertit une liste de cellules en dict structuré."""
-        joined = ' '.join(cells).strip()
-        joined_lower = joined.lower()
-
-        # Solde d'ouverture
-        if re.search(r"solde\s+d['\"']?\s*ouverture", joined_lower):
-            amounts = [self._clean_amount(c) for c in cells
-                       if re.search(r'[\d\s]{4,}', c)]
-            solde = amounts[-1] if amounts else ''
-            return self._make_row('', '', "Solde d'ouverture",
-                                  '', '', '', solde)
-
-        # Solde de clôture
-        if re.search(r"solde\s+de\s+cl[oô]ture", joined_lower):
-            amounts = [self._clean_amount(c) for c in cells
-                       if re.search(r'[\d\s]{4,}', c)]
-            solde = amounts[-1] if amounts else ''
-            return self._make_row('', '', "Solde de clôture",
-                                  '', '', '', solde)
-
-        # Frais / lignes spéciales à 2 lignes dans le PDF
-        # → on les capture si la date est présente
-        date_str = self._find_date(cells[0]) if cells else ''
-        if not date_str:
-            # Chercher la date dans toute la ligne
-            for c in cells:
-                date_str = self._find_date(c)
-                if date_str:
-                    break
-
-        if not date_str:
-            return None
-
-        # Référence
-        ref = ''
-        for c in cells:
-            m = re.search(r'(\d{3,6}/)', c)
-            if m:
-                ref = m.group(1)
-                break
-
-        # Libellé : cellule après référence (index 2 souvent)
-        libelle = cells[2] if len(cells) > 2 else ''
-        if not libelle:
-            # Reconstruire depuis toutes les cellules non-numériques
-            libelle = ' '.join(
-                c for c in cells
-                if c and not re.match(r'^[\d\s/]+$', c)
-                and c != date_str and c != ref
-            )
-
-        # Date valeur
-        date_valeur = ''
-        for c in cells[3:]:
-            dv = self._find_date(c)
-            if dv and dv != date_str:
-                date_valeur = dv
-                break
-
-        # Montants (débit, crédit, solde)
-        amounts = [
-            self._clean_amount(c) for c in cells
-            if self._is_amount(c)
-        ]
-
-        debit, credit, solde = '', '', ''
-        if len(amounts) == 1:
-            solde = amounts[0]
-        elif len(amounts) == 2:
-            credit = amounts[0]
-            solde = amounts[1]
-        elif len(amounts) >= 3:
-            debit = amounts[-3] if amounts[-3] else ''
-            credit = amounts[-2] if amounts[-2] else ''
-            solde = amounts[-1]
-
-        return self._make_row(date_str, ref, libelle.strip(),
-                              date_valeur, debit, credit, solde)
-
-    def _extract_by_words(self, page) -> list:
-        """Fallback : regrouper les mots par position Y."""
-        words = page.extract_words(
-            x_tolerance=4, y_tolerance=4,
-            keep_blank_chars=False
-        )
-        if not words:
-            return []
-
-        # Grouper par ligne
-        lines = {}
-        for w in words:
-            y = round(float(w['top']) / 5) * 5
-            lines.setdefault(y, []).append(w)
-
-        rows = []
-        for y in sorted(lines):
-            line_words = sorted(lines[y], key=lambda w: w['x0'])
-            text = ' '.join(w['text'] for w in line_words)
-
-            # Ignorer
-            text_lower = text.lower()
-            if any(re.search(p, text_lower) for p in self.IGNORE_PATTERNS):
-                continue
-
-            # Construire les cellules virtuelles par zone X
-            cells = self._words_to_cells(line_words, page.width)
-            row_dict = self._cells_to_dict(cells)
-            if row_dict:
-                rows.append(row_dict)
-
-        return rows
-
-    def _words_to_cells(self, words: list, page_width: float) -> list:
-        """Assigne chaque mot à une colonne selon sa position X."""
-        # Zones : date(0-15%), ref(15-28%), libelle(28-52%),
-        #         dvaleur(52-65%), debit(65-75%), credit(75-87%), solde(87-100%)
-        zones = [
-            (0.00, 0.15),   # Date
-            (0.15, 0.28),   # Référence
-            (0.28, 0.52),   # Libellé
-            (0.52, 0.65),   # D. Valeur
-            (0.65, 0.75),   # Débit
-            (0.75, 0.87),   # Crédit
-            (0.87, 1.00),   # Solde
-        ]
-        cells = [''] * len(zones)
-        for w in words:
-            ratio = w['x0'] / page_width
-            for i, (lo, hi) in enumerate(zones):
-                if lo <= ratio < hi:
-                    cells[i] = (cells[i] + ' ' + w['text']).strip()
-                    break
-        return cells
-
-    # ------------------------------------------------------------------
-    # EXTRACTION OCR
-    # ------------------------------------------------------------------
-
-    def _extract_ocr(self, pdf_bytes: bytes):
-        if not OCR_AVAILABLE:
-            return None
-
-        rows = []
-        try:
-            images = convert_from_bytes(pdf_bytes, dpi=300)
-            total = len(images)
-
-            for i, img in enumerate(images):
-                progress = 40 + int((i / total) * 35)
-                self._update_progress(
-                    progress,
-                    f"🔍 OCR page {i+1}/{total}"
-                )
-
-                processed = self._preprocess_image(img)
-                text = pytesseract.image_to_string(
-                    processed,
-                    config=r'--oem 3 --psm 6 -l fra+eng'
-                )
-
-                for line in text.split('\n'):
-                    line = line.strip()
-                    if not line:
-                        continue
-                    row = self._parse_text_line(line)
-                    if row:
-                        rows.append(row)
-
-            return pd.DataFrame(rows) if rows else None
-
-        except Exception as e:
-            print(f"Erreur OCR: {e}")
-            return None
-
-    def _preprocess_image(self, img: Image.Image) -> Image.Image:
-        """Améliore l'image pour l'OCR."""
-        if not OCR_AVAILABLE:
-            return img
-        try:
-            arr = np.array(img.convert('RGB'))
-            gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
-            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-            enhanced = clahe.apply(gray)
-            denoised = cv2.fastNlMeansDenoising(enhanced, h=10)
-            binary = cv2.adaptiveThreshold(
-                denoised, 255,
-                cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                cv2.THRESH_BINARY, 11, 2
-            )
-            return Image.fromarray(binary)
-        except Exception:
-            return img
-
-    def _parse_text_line(self, line: str) -> dict:
-        """Parse une ligne de texte OCR."""
-        line_lower = line.lower()
-
-        if any(re.search(p, line_lower) for p in self.IGNORE_PATTERNS):
-            return None
-
-        if re.search(r"solde\s+d['\"']?\s*ouverture", line_lower):
-            amounts = re.findall(r'\d[\d\s]{3,}\d', line)
-            solde = self._clean_amount(amounts[-1]) if amounts else ''
-            return self._make_row('', '', "Solde d'ouverture",
-                                  '', '', '', solde)
-
-        if re.search(r"solde\s+de\s+cl[oô]ture", line_lower):
-            amounts = re.findall(r'\d[\d\s]{3,}\d', line)
-            solde = self._clean_amount(amounts[-1]) if amounts else ''
-            return self._make_row('', '', "Solde de clôture",
-                                  '', '', '', solde)
-
-        date_str = self._find_date(line)
-        if not date_str:
-            return None
-
-        ref_match = re.search(r'(\d{3,6}/)', line)
-        ref = ref_match.group(1) if ref_match else ''
-
-        # Libellé = texte entre référence et montants
-        libelle = re.sub(
-            r'\d{2}[/\-]\w+[/\-]\d{4}|\d{2}/\d{2}/\d{4}|'
-            r'\d{3,6}/|\d{5,}', '', line
-        ).strip()
-        libelle = re.sub(r'\s+', ' ', libelle).strip()
-
-        numbers = re.findall(r'\d[\d\s]{3,}\d', line)
-        cleaned = [self._clean_amount(n) for n in numbers]
-        valid = [n for n in cleaned if n and len(n) >= 3]
-
-        debit, credit, solde = '', '', ''
-        if valid:
-            solde = valid[-1]
-            if len(valid) >= 2:
-                credit = valid[-2]
-
-        return self._make_row(date_str, ref, libelle, '', debit, credit, solde)
-
-    # ------------------------------------------------------------------
-    # POST-TRAITEMENT
-    # ------------------------------------------------------------------
-
-    def _finalize(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Nettoyage final du DataFrame."""
-        self._update_progress(90, "🧹 Nettoyage des données...")
-
-        expected = ['Date', 'Référence', 'Libellé',
-                    'Date_Valeur', 'Débit', 'Crédit', 'Solde']
-
-        for col in expected:
-            if col not in df.columns:
-                df[col] = ''
-
-        df = df[expected].copy()
-
-        # Nettoyage des montants
-        for col in ['Débit', 'Crédit', 'Solde']:
-            df[col] = df[col].apply(self._clean_amount)
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-
-        # Supprimer les lignes inutiles
-        df = df[df['Libellé'].notna() & (df['Libellé'] != '')]
-        df = df[df['Libellé'].str.lower().apply(
-            lambda x: not any(re.search(p, x) for p in self.IGNORE_PATTERNS)
-        )]
-
-        # Nettoyer les libellés
-        df['Libellé'] = df['Libellé'].str.replace(r'\s+', ' ', regex=True).str.strip()
-
-        df = df.reset_index(drop=True)
-        self._update_progress(100, "✅ Terminé !")
-        return df
-
-    # ------------------------------------------------------------------
-    # UTILITAIRES
-    # ------------------------------------------------------------------
-
-    def _find_date(self, text: str) -> str:
-        """Cherche et normalise une date dans un texte."""
-        if not text:
-            return ''
-
-        # Format 02/Jan/2025 ou 02-Jan-2025
-        m = re.search(
-            r'(\d{2})[/\-](\w{3,})[/\-](\d{4})',
-            text, re.IGNORECASE
-        )
-        if m:
-            day, month, year = m.groups()
-            month_num = self.MONTH_MAP.get(month.lower()[:3], '')
-            if month_num:
-                return f"{day}/{month_num}/{year}"
-
-        # Format 02/01/2025
-        m = re.search(r'(\d{2}/\d{2}/\d{4})', text)
-        if m:
-            return m.group(1)
-
-        return ''
-
-    def _clean_amount(self, val) -> str:
-        """Supprime les espaces et caractères non numériques."""
-        if val is None:
-            return ''
-        s = str(val).strip()
-        s = re.sub(r'[\s\xa0\u202f]', '', s)
-        s = re.sub(r'[^\d]', '', s)
-        return s if s else ''
-
-    def _is_amount(self, text: str) -> bool:
-        """Vérifie si un texte ressemble à un montant."""
-        if not text:
-            return False
-        cleaned = re.sub(r'[\s\xa0]', '', str(text))
-        return bool(re.match(r'^\d{3,}$', cleaned))
-
-    def _is_header(self, cells: list) -> bool:
-        """Détecte une ligne d'en-tête de tableau."""
-        text = ' '.join(cells).lower()
-        keywords = ['date', 'batch', 'libelle', 'libellé',
-                    'valeur', 'debit', 'débit', 'credit',
-                    'crédit', 'solde', 'ref']
-        return sum(1 for k in keywords if k in text) >= 3
-
-    def _make_row(self, date, ref, libelle, date_valeur,
-                  debit, credit, solde) -> dict:
         return {
-            'Date': date,
-            'Référence': ref,
-            'Libellé': libelle,
-            'Date_Valeur': date_valeur,
-            'Débit': debit,
-            'Crédit': credit,
-            'Solde': solde,
+            'total_pages':          total_pages,
+            'total_chars':          total_chars,
+            'tokens_used':          total_tokens,
+            'tokens_saved':         image_tokens_estimate - total_tokens,
+            'savings_pct': round(
+                (1 - total_tokens / max(image_tokens_estimate, 1))
+                * 100
+            ),
+            'cost_usd':             round(cost_usd, 6),
+            'cost_image_usd':       round(image_cost_estimate, 6),
         }
