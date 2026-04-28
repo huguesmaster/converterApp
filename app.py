@@ -1,8 +1,9 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║         BANK STATEMENT EXTRACTOR — Streamlit + Gemini        ║
+║         BANK STATEMENT EXTRACTOR — Streamlit                 ║
 ║         Compatible : Toutes banques du Cameroun              ║
-║         Version : 3.0.0                                      ║
+║         Modes : Gemini Vision | Gemini Hybride | pdfplumber  ║
+║         Version : 3.1.0                                      ║
 ╚══════════════════════════════════════════════════════════════╝
 """
 
@@ -20,7 +21,11 @@ from extractor_gemini import GeminiExtractor
 from cleaner import DataCleaner
 from exporter import BankStatementExporter
 from token_counter import TokenCounter
-
+# ── Helper pour compter les pages sans charger toutes ──
+def pdfplumber_open(pdf_bytes: bytes):
+    """Ouvre un PDF depuis des bytes."""
+    import pdfplumber
+    return pdfplumber.open(io.BytesIO(pdf_bytes))
 # ══════════════════════════════════════════════════════════════
 # CONFIGURATION PAGE
 # ══════════════════════════════════════════════════════════════
@@ -82,20 +87,20 @@ st.markdown("""
 }
 .badge-gemini {
     background: linear-gradient(
-        135deg, #4285F4, #EA4335, #FBBC04, #34A853
+        135deg,#4285F4,#EA4335,#FBBC04,#34A853
     );
     color: white;
 }
-.badge-success { background: #D5F5E3; color: #1E8449; }
-.badge-warning { background: #FDEBD0; color: #784212; }
-.badge-info    { background: #D6EAF8; color: #1A5276; }
-.badge-danger  { background: #FADBD8; color: #922B21; }
+.badge-success { background:#D5F5E3; color:#1E8449; }
+.badge-warning { background:#FDEBD0; color:#784212; }
+.badge-info    { background:#D6EAF8; color:#1A5276; }
+.badge-danger  { background:#FADBD8; color:#922B21; }
 
 /* ── Cartes stats ── */
 .stat-card {
     background: white;
     border-radius: 14px;
-    padding: 1.3rem 1rem;
+    padding: 1.2rem 1rem;
     text-align: center;
     box-shadow: 0 2px 14px rgba(0,0,0,0.06);
     border-top: 4px solid;
@@ -108,6 +113,7 @@ st.markdown("""
 .stat-card.net-pos { border-color: #2980B9; }
 .stat-card.net-neg { border-color: #E74C3C; }
 .stat-card.count   { border-color: #8E44AD; }
+.stat-card.solde   { border-color: #1B3A5C; }
 .stat-label {
     font-size: 0.72rem;
     color: #95A5A6;
@@ -118,7 +124,7 @@ st.markdown("""
 }
 .stat-icon  { font-size: 1.4rem; margin-bottom: 4px; }
 .stat-value {
-    font-size: 1.4rem;
+    font-size: 1.35rem;
     font-weight: 800;
     color: #2C3E50;
     line-height: 1.2;
@@ -129,39 +135,42 @@ st.markdown("""
     margin-top: 3px;
 }
 
-/* ── Boîtes d'info ── */
+/* ── Boîtes info ── */
 .info-box {
     background: #EBF5FB;
     border-left: 4px solid #2E75B6;
     border-radius: 0 10px 10px 0;
-    padding: 0.9rem 1.1rem;
+    padding: 0.85rem 1.1rem;
     margin: 0.6rem 0;
-    font-size: 0.88rem;
-    line-height: 1.6;
+    font-size: 0.87rem;
+    line-height: 1.65;
 }
 .success-box {
     background: #EAFAF1;
     border-left: 4px solid #27AE60;
     border-radius: 0 10px 10px 0;
-    padding: 0.9rem 1.1rem;
+    padding: 0.85rem 1.1rem;
     margin: 0.6rem 0;
-    font-size: 0.88rem;
+    font-size: 0.87rem;
+    line-height: 1.65;
 }
 .warning-box {
     background: #FEF9E7;
     border-left: 4px solid #F39C12;
     border-radius: 0 10px 10px 0;
-    padding: 0.9rem 1.1rem;
+    padding: 0.85rem 1.1rem;
     margin: 0.6rem 0;
-    font-size: 0.88rem;
+    font-size: 0.87rem;
+    line-height: 1.65;
 }
 .error-box {
     background: #FDEDEC;
     border-left: 4px solid #E74C3C;
     border-radius: 0 10px 10px 0;
-    padding: 0.9rem 1.1rem;
+    padding: 0.85rem 1.1rem;
     margin: 0.6rem 0;
-    font-size: 0.88rem;
+    font-size: 0.87rem;
+    line-height: 1.65;
 }
 
 /* ── Upload zone ── */
@@ -171,33 +180,28 @@ st.markdown("""
     padding: 2.5rem;
     text-align: center;
     background: white;
-    transition: all 0.3s;
-    cursor: pointer;
-}
-.upload-zone:hover {
-    border-color: #2E75B6;
-    background: #F0F8FF;
+    margin: 1rem 0;
 }
 
-/* ── Banques ── */
+/* ── Banques grid ── */
 .bank-grid {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    gap: 0.5rem;
+    gap: 0.45rem;
     margin: 0.5rem 0;
 }
 .bank-chip {
     background: #F8F9FA;
     border: 1px solid #E0E0E0;
     border-radius: 8px;
-    padding: 5px 8px;
-    font-size: 0.75rem;
+    padding: 5px 7px;
+    font-size: 0.73rem;
     text-align: center;
     color: #2C3E50;
     font-weight: 500;
 }
 
-/* ── Estimation tokens ── */
+/* ── Token estimate ── */
 .token-estimate-card {
     background: white;
     border-radius: 14px;
@@ -219,7 +223,7 @@ st.markdown("""
     padding: 0.8rem 0.5rem;
 }
 .token-metric-value {
-    font-size: 1.3rem;
+    font-size: 1.25rem;
     font-weight: 800;
     color: #1B3A5C;
 }
@@ -229,33 +233,23 @@ st.markdown("""
     margin-top: 3px;
 }
 
-/* ── Progress bar custom ── */
-.progress-container {
-    background: white;
-    border-radius: 14px;
-    padding: 2rem;
-    box-shadow: 0 2px 14px rgba(0,0,0,0.07);
-    text-align: center;
-    margin: 2rem auto;
-    max-width: 600px;
+/* ── Log entries ── */
+.log-entry {
+    border-radius: 6px;
+    padding: 5px 10px;
+    margin: 2px 0;
+    font-size: 0.82rem;
+    font-family: 'Segoe UI', sans-serif;
 }
-
-/* ── Tableau ── */
-.stDataFrame {
-    border-radius: 12px !important;
-}
-
-/* ── Toolbar ── */
-.toolbar-container {
-    background: white;
-    border-radius: 12px 12px 0 0;
-    padding: 1rem 1.2rem;
-    border-bottom: 1px solid #E8ECF0;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    flex-wrap: wrap;
-    gap: 0.8rem;
+.log-detail {
+    font-size: 0.76rem;
+    color: #5D6D7E;
+    margin-top: 3px;
+    padding-left: 1rem;
+    border-left: 2px solid #BDC3C7;
+    font-family: monospace;
+    white-space: pre-wrap;
+    word-break: break-all;
 }
 
 /* ── Footer ── */
@@ -270,8 +264,8 @@ st.markdown("""
 
 /* ── Responsive ── */
 @media (max-width: 768px) {
-    .token-grid  { grid-template-columns: repeat(2,1fr); }
-    .bank-grid   { grid-template-columns: repeat(2,1fr); }
+    .token-grid { grid-template-columns: repeat(2,1fr); }
+    .bank-grid  { grid-template-columns: repeat(2,1fr); }
     .main-header h1 { font-size: 1.5rem; }
 }
 </style>
@@ -282,7 +276,6 @@ st.markdown("""
 # CONSTANTES
 # ══════════════════════════════════════════════════════════════
 
-# Banques camerounaises supportées
 BANQUES_CAMEROUN = [
     {"nom": "Financial House S.A", "code": "FH",    "emoji": "🏛️"},
     {"nom": "Afriland First Bank",  "code": "AFB",   "emoji": "🌍"},
@@ -298,8 +291,36 @@ BANQUES_CAMEROUN = [
 ]
 
 METHODES = {
-    "gemini":      "🤖 Gemini AI — Hybride (Recommandé)",
-    "pdfplumber":  "📄 pdfplumber — Sans IA (Gratuit)",
+    "vision":     "🔭 Gemini Vision — Image (Recommandé)",
+    "hybrid":     "⚡ Gemini Hybride — Texte + IA",
+    "pdfplumber": "📄 pdfplumber — Sans IA (Gratuit)",
+}
+
+METHOD_DESC = {
+    "vision": """
+    <div class="info-box">
+        ✅ Lit le PDF comme un humain<br>
+        ✅ Débit <b>ET</b> Crédit extraits fidèlement<br>
+        ✅ Fonctionne sur PDF scanné et natif<br>
+        ✅ Compatible toutes banques camerounaises<br>
+        ⚠️ Consomme plus de tokens (images envoyées)
+    </div>""",
+    "hybrid": """
+    <div class="info-box">
+        ✅ ~85% moins de tokens vs Vision<br>
+        ✅ Très rapide<br>
+        ✅ Debug détaillé intégré<br>
+        ⚠️ Nécessite un PDF texte natif lisible<br>
+        ⚠️ Peut basculer en Vision si PDF scanné
+    </div>""",
+    "pdfplumber": """
+    <div class="info-box">
+        ✅ Entièrement gratuit, sans clé API<br>
+        ✅ Rapide et fonctionne hors-ligne<br>
+        ❌ Colonne Débit souvent vide<br>
+        ❌ PDF scanné non supporté<br>
+        ❌ Précision variable selon banque
+    </div>""",
 }
 
 
@@ -313,13 +334,22 @@ def init_state():
         "account_info":       None,
         "file_name":          "",
         "extraction_done":    False,
-        "extraction_method":  "gemini",
+        "extraction_method":  "vision",
         "token_counter":      None,
         "pages_text":         None,
         "show_confirm":       False,
         "estimate":           None,
         "banque_selectionnee": "Financial House S.A",
         "pdf_bytes_cache":    None,
+        "debug_logs":         "",
+        "debug_summary":      {},
+        "debug_entries":      [],
+        "account_name":       "",
+        "account_id":         "",
+        "rows_per_page":      100,
+        "show_chart":         True,
+        "show_tokens":        True,
+        "show_debug":         True,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -336,7 +366,7 @@ init_state()
 # ══════════════════════════════════════════════════════════════
 
 def get_gemini_key() -> str:
-    """Récupère la clé Gemini (secrets Streamlit ou saisie)."""
+    """Récupère la clé API Gemini."""
     try:
         key = st.secrets.get("GEMINI_API_KEY", "")
         if key:
@@ -348,35 +378,47 @@ def get_gemini_key() -> str:
 
 def format_amount(val) -> str:
     """Formate un nombre avec séparateurs de milliers."""
-    if val is None or (isinstance(val, float) and np.isnan(val)):
+    if val is None or (
+        isinstance(val, float) and np.isnan(val)
+    ):
         return ""
     try:
-        n = float(val)
-        return f"{n:,.0f}".replace(",", " ")
+        return f"{float(val):,.0f}".replace(",", " ")
     except (ValueError, TypeError):
         return str(val)
 
 
+def get_banque_info(nom: str) -> dict:
+    """Retourne les infos d'une banque par son nom."""
+    return next(
+        (b for b in BANQUES_CAMEROUN if b["nom"] == nom),
+        BANQUES_CAMEROUN[-1],
+    )
+
+
 def reset_app():
     """Remet l'application à l'état initial."""
-    keys_to_keep = {"token_counter", "gemini_key_input"}
+    preserve = {
+        "token_counter",
+        "gemini_key_input",
+        "account_name",
+        "account_id",
+        "rows_per_page",
+        "show_chart",
+        "show_tokens",
+        "show_debug",
+    }
     for k in list(st.session_state.keys()):
-        if k not in keys_to_keep:
+        if k not in preserve:
             del st.session_state[k]
     init_state()
 
 
 def style_dataframe(df: pd.DataFrame):
-    """
-    Applique un style conditionnel au DataFrame :
-    - Vert pour les crédits
-    - Rouge pour les débits
-    - Bleu pour les lignes de solde
-    """
+    """Applique un style conditionnel au DataFrame."""
+
     def _row_style(row):
         libelle = str(row.get("Libellé", "")).lower()
-
-        # Ligne de solde → fond bleu clair
         if re.search(r"solde", libelle):
             return [
                 "background-color:#D6EAF8;"
@@ -386,7 +428,6 @@ def style_dataframe(df: pd.DataFrame):
         styles = [""] * len(row)
         cols   = list(row.index)
 
-        # Débit → rouge clair
         if "Débit" in cols:
             idx = cols.index("Débit")
             val = row.get("Débit")
@@ -396,7 +437,6 @@ def style_dataframe(df: pd.DataFrame):
                     "color:#C0392B;font-weight:600"
                 )
 
-        # Crédit → vert clair
         if "Crédit" in cols:
             idx = cols.index("Crédit")
             val = row.get("Crédit")
@@ -405,7 +445,6 @@ def style_dataframe(df: pd.DataFrame):
                     "background-color:#D5F5E3;"
                     "color:#1E8449;font-weight:600"
                 )
-
         return styles
 
     fmt = {
@@ -413,7 +452,6 @@ def style_dataframe(df: pd.DataFrame):
         "Crédit": lambda x: format_amount(x) if pd.notna(x) else "",
         "Solde":  lambda x: format_amount(x) if pd.notna(x) else "",
     }
-
     return df.style.apply(_row_style, axis=1).format(fmt)
 
 
@@ -421,17 +459,35 @@ def render_stat_card(
     col, css_class: str, icon: str,
     label: str, value: str, sub: str = ""
 ):
-    """Rend une carte statistique."""
+    """Rend une carte statistique HTML."""
     with col:
+        sub_html = (
+            f'<div class="stat-sub">{sub}</div>'
+            if sub else ""
+        )
         st.markdown(f"""
         <div class="stat-card {css_class}">
             <div class="stat-icon">{icon}</div>
             <div class="stat-label">{label}</div>
             <div class="stat-value">{value}</div>
-            {"" if not sub else
-             f'<div class="stat-sub">{sub}</div>'}
+            {sub_html}
         </div>
         """, unsafe_allow_html=True)
+
+
+def update_progress(step: int, message: str):
+    """Met à jour la barre de progression globale."""
+    if "progress_bar" in st.session_state:
+        if step > 0:
+            st.session_state.progress_bar.progress(
+                min(step / 100, 1.0)
+            )
+    if "status_placeholder" in st.session_state:
+        st.session_state.status_placeholder.markdown(
+            f"""<div style='text-align:center;color:#1B3A5C;
+            padding:0.5rem;font-size:0.95rem'>{message}</div>""",
+            unsafe_allow_html=True,
+        )
 
 
 # ══════════════════════════════════════════════════════════════
@@ -439,12 +495,13 @@ def render_stat_card(
 # ══════════════════════════════════════════════════════════════
 with st.sidebar:
 
-    # Logo / Titre sidebar
+    # ── Logo ──────────────────────────────────────────────────
     st.markdown("""
     <div style="text-align:center;padding:0.5rem 0 1rem">
         <div style="font-size:2.2rem">🏦</div>
-        <div style="font-weight:800;font-size:1rem;
-                    color:#1B3A5C">Bank Extractor</div>
+        <div style="font-weight:800;font-size:1rem;color:#1B3A5C">
+            Bank Extractor
+        </div>
         <div style="font-size:0.72rem;color:#95A5A6">
             Toutes banques du Cameroun
         </div>
@@ -453,12 +510,12 @@ with st.sidebar:
 
     st.divider()
 
-    # ── 1. Upload PDF ──────────────────────────────
+    # ── 1. Upload PDF ──────────────────────────────────────────
     st.markdown("#### 📂 Relevé bancaire")
     uploaded_file = st.file_uploader(
         "Glissez votre PDF ici",
         type=["pdf"],
-        help="Formats supportés : PDF natif ou scanné — max 50 MB",
+        help="Formats : PDF natif ou scanné — max 50 MB",
         label_visibility="collapsed",
     )
     if uploaded_file:
@@ -474,27 +531,24 @@ with st.sidebar:
 
     st.divider()
 
-    # ── 2. Banque ──────────────────────────────────
-    st.markdown("#### 🏦 Banque")
+    # ── 2. Banque ──────────────────────────────────────────────
+    st.markdown("#### 🏦 Banque émettrice")
     banque_noms = [b["nom"] for b in BANQUES_CAMEROUN]
     banque_sel  = st.selectbox(
-        "Sélectionner la banque",
+        "Banque",
         options=banque_noms,
         index=0,
         label_visibility="collapsed",
     )
     st.session_state.banque_selectionnee = banque_sel
-
-    # Trouver l'emoji de la banque
-    banque_info = next(
-        (b for b in BANQUES_CAMEROUN if b["nom"] == banque_sel),
-        BANQUES_CAMEROUN[-1]
+    banque_info = get_banque_info(banque_sel)
+    st.caption(
+        f"{banque_info['emoji']} {banque_sel} sélectionnée"
     )
-    st.caption(f"{banque_info['emoji']} {banque_sel} sélectionnée")
 
     st.divider()
 
-    # ── 3. Méthode d'extraction ────────────────────
+    # ── 3. Méthode d'extraction ────────────────────────────────
     st.markdown("#### 🤖 Méthode d'extraction")
     method_key = st.radio(
         "Méthode",
@@ -504,38 +558,21 @@ with st.sidebar:
         label_visibility="collapsed",
     )
     st.session_state.extraction_method = method_key
+    st.markdown(
+        METHOD_DESC.get(method_key, ""),
+        unsafe_allow_html=True,
+    )
 
-    # Afficher les avantages de chaque méthode
-    if method_key == "gemini":
-        st.markdown("""
-        <div class="info-box">
-            ✅ Précision maximale<br>
-            ✅ Débit & Crédit exacts<br>
-            ✅ Fonctionne sur tout PDF<br>
-            ✅ ~85% moins de tokens<br>
-            🔑 Clé API requise
-        </div>
-        """, unsafe_allow_html=True)
-    else:
-        st.markdown("""
-        <div class="info-box">
-            ✅ Gratuit, sans clé API<br>
-            ✅ Rapide<br>
-            ⚠️ Colonne Débit souvent vide<br>
-            ⚠️ PDF natif uniquement
-        </div>
-        """, unsafe_allow_html=True)
-
-    # ── 4. Clé API Gemini ──────────────────────────
-    if method_key == "gemini":
+    # ── 4. Clé API Gemini ──────────────────────────────────────
+    if method_key in ("vision", "hybrid"):
         st.divider()
         st.markdown("#### 🔑 Clé API Gemini")
 
-        existing = get_gemini_key()
-        if existing:
+        existing_key = get_gemini_key()
+        if existing_key:
             st.markdown("""
             <div class="success-box">
-                ✅ Clé API configurée
+                ✅ Clé API configurée et active
             </div>
             """, unsafe_allow_html=True)
         else:
@@ -545,66 +582,73 @@ with st.sidebar:
                 placeholder="AIzaSy...",
                 label_visibility="collapsed",
                 help=(
-                    "Obtenez une clé gratuite sur : "
+                    "Clé gratuite sur : "
                     "https://aistudio.google.com/app/apikey"
-                )
+                ),
             )
             st.session_state["gemini_key_input"] = key_input
             if not key_input:
                 st.markdown("""
                 <div class="warning-box">
-                    🔗 <a href="https://aistudio.google.com/app/apikey"
-                    target="_blank">Obtenir une clé gratuite</a>
+                    🔗
+                    <a href="https://aistudio.google.com/app/apikey"
+                    target="_blank">
+                        Obtenir une clé gratuite
+                    </a>
                 </div>
                 """, unsafe_allow_html=True)
 
     st.divider()
 
-    # ── 5. Informations compte ─────────────────────
-    with st.expander("👤 Informations compte", expanded=False):
-        account_name = st.text_input(
-            "Titulaire du compte",
-            value="",
-            placeholder="Nom complet du titulaire",
+    # ── 5. Informations compte ─────────────────────────────────
+    with st.expander(
+        "👤 Informations du titulaire", expanded=False
+    ):
+        st.session_state.account_name = st.text_input(
+            "Nom du titulaire",
+            value=st.session_state.account_name,
+            placeholder="Nom complet",
         )
-        account_id = st.text_input(
+        st.session_state.account_id = st.text_input(
             "Numéro de compte",
-            value="",
+            value=st.session_state.account_id,
             placeholder="Ex: 030304107...",
         )
 
-    st.divider()
-
-    # ── 6. Options d'affichage ─────────────────────
+    # ── 6. Options d'affichage ─────────────────────────────────
     with st.expander("⚙️ Options d'affichage", expanded=False):
-        rows_per_page = st.select_slider(
+        st.session_state.rows_per_page = st.select_slider(
             "Lignes par page",
             options=[25, 50, 100, 200, 500],
-            value=100,
+            value=st.session_state.rows_per_page,
         )
-        show_chart = st.checkbox(
-            "Afficher le graphique de solde", value=True
+        st.session_state.show_chart = st.checkbox(
+            "📈 Graphique du solde",
+            value=st.session_state.show_chart,
         )
-        show_tokens = st.checkbox(
-            "Afficher l'utilisation des tokens", value=True
+        st.session_state.show_tokens = st.checkbox(
+            "📊 Utilisation des tokens",
+            value=st.session_state.show_tokens,
+        )
+        st.session_state.show_debug = st.checkbox(
+            "🔍 Logs de débogage",
+            value=st.session_state.show_debug,
         )
 
     st.divider()
 
-    # ── 7. Bouton reset ────────────────────────────
+    # ── 7. Bouton reset ────────────────────────────────────────
     if st.button(
         "🔄 Nouvelle extraction",
         use_container_width=True,
-        help="Remet l'application à zéro"
     ):
         reset_app()
         st.rerun()
 
-    # ── Version ────────────────────────────────────
     st.markdown("""
     <div style="text-align:center;margin-top:1rem;
                 font-size:0.72rem;color:#BDC3C7">
-        v3.0.0 — Cameroun Edition
+        v3.1.0 — Cameroun Edition
     </div>
     """, unsafe_allow_html=True)
 
@@ -612,7 +656,7 @@ with st.sidebar:
 # ══════════════════════════════════════════════════════════════
 # HEADER PRINCIPAL
 # ══════════════════════════════════════════════════════════════
-st.markdown(f"""
+st.markdown("""
 <div class="main-header">
     <h1>🏦 Bank Statement Extractor</h1>
     <div class="subtitle">
@@ -629,83 +673,91 @@ st.markdown(f"""
 
 
 # ══════════════════════════════════════════════════════════════
-# SECTION : PAS DE FICHIER CHARGÉ
+# PAGE D'ACCUEIL — Aucun fichier chargé
 # ══════════════════════════════════════════════════════════════
-if not st.session_state.extraction_done and uploaded_file is None:
-
-    # Guide des banques supportées
+if (
+    not st.session_state.extraction_done
+    and not st.session_state.show_confirm
+    and uploaded_file is None
+):
+    # Banques supportées
     st.markdown("### 🇨🇲 Banques supportées")
     bank_html = '<div class="bank-grid">'
     for b in BANQUES_CAMEROUN:
-        bank_html += f"""
-        <div class="bank-chip">
-            {b['emoji']} {b['nom']}
-        </div>"""
+        bank_html += (
+            f'<div class="bank-chip">'
+            f'{b["emoji"]} {b["nom"]}</div>'
+        )
     bank_html += "</div>"
     st.markdown(bank_html, unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # Deux colonnes : comparaison méthodes
-    col_l, col_r = st.columns(2)
+    # Comparaison méthodes
+    col_l, col_m, col_r = st.columns(3)
+
     with col_l:
         st.markdown("""
         <div class="info-box">
-            <b>🤖 Mode Gemini AI (Recommandé)</b><br><br>
+            <b>🔭 Gemini Vision (Recommandé)</b><br><br>
             ✅ Lit le PDF comme un humain<br>
-            ✅ Débit <b>ET</b> Crédit extraits correctement<br>
+            ✅ Débit <b>ET</b> Crédit corrects<br>
+            ✅ PDF scanné + natif<br>
+            ✅ Toutes les banques<br>
             ✅ Libellés multi-lignes fusionnés<br>
-            ✅ Compatible PDF scannés & natifs<br>
-            ✅ 85% de tokens économisés (mode hybride)<br>
-            ✅ Fonctionne sur toutes les banques<br>
-            🔑 Nécessite une clé API Gemini (gratuite)
+            🔑 Clé API Gemini (gratuite)
+        </div>
+        """, unsafe_allow_html=True)
+
+    with col_m:
+        st.markdown("""
+        <div class="info-box">
+            <b>⚡ Gemini Hybride</b><br><br>
+            ✅ 85% moins de tokens<br>
+            ✅ Très rapide<br>
+            ✅ Debug détaillé<br>
+            ⚠️ PDF texte natif requis<br>
+            ⚠️ Auto-bascule vers Vision<br>
+            🔑 Clé API Gemini (gratuite)
         </div>
         """, unsafe_allow_html=True)
 
     with col_r:
         st.markdown("""
         <div class="info-box">
-            <b>📄 Mode pdfplumber (Basique)</b><br><br>
-            ✅ Entièrement gratuit<br>
-            ✅ Rapide (pas d'appel API)<br>
-            ✅ Fonctionne hors-ligne<br>
-            ⚠️ Colonne Débit souvent vide<br>
-            ⚠️ Mauvais sur PDF scannés<br>
-            ⚠️ Précision variable selon banque<br>
-            ❌ Ne comprend pas le contexte
+            <b>📄 pdfplumber (Gratuit)</b><br><br>
+            ✅ Aucune clé API<br>
+            ✅ Rapide, hors-ligne<br>
+            ❌ Colonne Débit vide<br>
+            ❌ PDF scanné non supporté<br>
+            ❌ Précision variable<br>
+            &nbsp;
         </div>
         """, unsafe_allow_html=True)
 
-    # Guide d'utilisation
-    st.markdown("<br>", unsafe_allow_html=True)
-    with st.expander("📖 Guide d'utilisation rapide", expanded=False):
+    # Guide rapide
+    with st.expander(
+        "📖 Guide d'utilisation", expanded=False
+    ):
         st.markdown("""
-        #### Étapes pour extraire vos données :
+        **1.** Chargez votre PDF dans le panneau latéral
 
-        **1. Chargez votre PDF**
-        → Utilisez le panneau latéral gauche pour importer
-          votre relevé bancaire (format PDF)
+        **2.** Sélectionnez votre banque
 
-        **2. Sélectionnez votre banque**
-        → Choisissez votre banque dans la liste déroulante
-          pour optimiser l'extraction
+        **3.** Choisissez la méthode :
+        - **Vision** → meilleure précision (recommandé)
+        - **Hybride** → plus économique en tokens
+        - **pdfplumber** → gratuit mais moins précis
 
-        **3. Choisissez la méthode d'extraction**
-        → **Gemini AI** : meilleure précision (recommandé)
-        → **pdfplumber** : rapide et gratuit
+        **4.** Entrez votre clé API Gemini si besoin
+        → [Obtenir une clé gratuite](https://aistudio.google.com/app/apikey)
 
-        **4. Configurez la clé API** (si Gemini sélectionné)
-        → Obtenez une clé gratuite sur
-          [Google AI Studio](https://aistudio.google.com/app/apikey)
+        **5.** Cliquez **Lancer l'extraction**
 
-        **5. Lancez l'extraction**
-        → Vérifiez l'estimation de tokens
-        → Confirmez et attendez le résultat
-
-        **6. Exportez vos données**
-        → Excel formaté ou CSV compatible
+        **6.** Vérifiez et exportez en **Excel** ou **CSV**
         """)
 
+    # Zone upload visuelle
     st.markdown("""
     <div class="upload-zone">
         <div style="font-size:3.5rem">📄</div>
@@ -713,31 +765,31 @@ if not st.session_state.extraction_done and uploaded_file is None:
             Chargez votre relevé PDF dans la barre latérale
         </h3>
         <p style="color:#95A5A6;margin:0">
-            Accepte tous les formats PDF (natif ou scanné)
-            jusqu'à 50 MB
+            PDF natif ou scanné — toutes banques — max 50 MB
         </p>
     </div>
     """, unsafe_allow_html=True)
 
 
 # ══════════════════════════════════════════════════════════════
-# SECTION : FICHIER CHARGÉ — PRÊT À EXTRAIRE
+# PRÊT À EXTRAIRE — Fichier chargé, pas encore confirmé
 # ══════════════════════════════════════════════════════════════
 if (
     not st.session_state.extraction_done
-    and uploaded_file is not None
     and not st.session_state.show_confirm
+    and uploaded_file is not None
 ):
     method    = st.session_state.extraction_method
     api_key   = get_gemini_key()
     banque    = st.session_state.banque_selectionnee
+    b_info    = get_banque_info(banque)
 
     # Carte récapitulative
     st.markdown(f"""
     <div style="background:white;border-radius:14px;
                 padding:1.5rem 2rem;
                 box-shadow:0 2px 14px rgba(0,0,0,0.07);
-                max-width:580px;margin:1.5rem auto;
+                max-width:600px;margin:1.5rem auto;
                 text-align:center">
         <div style="font-size:2.8rem">📄</div>
         <h3 style="color:#1B3A5C;margin:0.5rem 0">
@@ -745,27 +797,27 @@ if (
         </h3>
         <div style="color:#7F8C8D;font-size:0.88rem;
                     margin-bottom:1rem">
-            {uploaded_file.size/1024:.1f} KB
+            {uploaded_file.size / 1024:.1f} KB
             &nbsp;·&nbsp;
-            {banque_info['emoji']} {banque}
+            {b_info['emoji']} {banque}
             &nbsp;·&nbsp;
             {METHODES[method]}
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-    # Vérification clé API
-    if method == "gemini" and not api_key:
+    # Alerte clé API manquante
+    if method in ("vision", "hybrid") and not api_key:
         st.markdown("""
         <div class="error-box">
             ❌ <b>Clé API Gemini manquante !</b><br>
-            Saisissez votre clé dans le panneau latéral,
-            ou passez en mode pdfplumber.
+            Saisissez votre clé dans le panneau latéral
+            gauche, ou passez en mode <b>pdfplumber</b>.
         </div>
         """, unsafe_allow_html=True)
         st.stop()
 
-    # Bouton principal
+    # Bouton lancer
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         launch_btn = st.button(
@@ -778,37 +830,84 @@ if (
         pdf_bytes = uploaded_file.read()
         st.session_state.pdf_bytes_cache = pdf_bytes
 
-        # ── Mode Gemini : pré-extraction texte + estimation ──
-        if method == "gemini":
-            with st.spinner(
-                "📄 Lecture du PDF (calcul de l'estimation)..."
-            ):
-                try:
-                    temp_ext = GeminiExtractor(api_key=api_key)
-                    pages    = temp_ext._extract_text_from_pdf(
-                        pdf_bytes
+        # ── Mode Gemini : pré-calcul de l'estimation ──
+        if method in ("vision", "hybrid"):
+
+            if method == "hybrid":
+                # Extraire le texte pour estimer les tokens
+                with st.spinner(
+                    "📄 Lecture du PDF "
+                    "(calcul de l'estimation)..."
+                ):
+                    try:
+                        temp_ext = GeminiExtractor(
+                            api_key=api_key,
+                            mode="hybrid",
+                            verbose_debug=False,
+                        )
+                        pages = (
+                            temp_ext
+                            ._extract_text_from_pdf_public(
+                                pdf_bytes
+                            )
+                        )
+                        st.session_state.pages_text = pages
+                        counter  = st.session_state.token_counter
+                        estimate = (
+                            counter.estimate_before_extraction(
+                                pages
+                            )
+                        )
+                        st.session_state.estimate = estimate
+                    except Exception as e:
+                        st.warning(
+                            f"⚠️ Estimation impossible : {e} "
+                            f"— extraction directe..."
+                        )
+                        st.session_state.estimate = None
+
+            elif method == "vision":
+                # Estimation basée sur le nombre de pages
+                with st.spinner(
+                    "📄 Lecture du PDF "
+                    "(comptage des pages)..."
+                ):
+                    try:
+                        with pdfplumber_open(pdf_bytes) as pdf:
+                            n_pages = len(pdf.pages)
+                    except Exception:
+                        n_pages = 1
+
+                    # ~2000 tokens/page en mode vision
+                    in_tok  = n_pages * 2000
+                    out_tok = n_pages * 800
+                    cost    = (
+                        in_tok / 1_000_000 * 0.075
+                        + out_tok / 1_000_000 * 0.30
                     )
-                    st.session_state.pages_text = pages
+                    st.session_state.estimate = {
+                        "pages":         n_pages,
+                        "input_tokens":  in_tok,
+                        "output_tokens": out_tok,
+                        "total_tokens":  in_tok + out_tok,
+                        "cost_usd":      round(cost, 4),
+                        "cost_fcfa":     round(cost * 620, 1),
+                        "within_free_tier": in_tok < 400_000,
+                        "savings_pct":   0,
+                    }
 
-                    counter  = st.session_state.token_counter
-                    estimate = counter.estimate_before_extraction(pages)
-                    st.session_state.estimate    = estimate
-                    st.session_state.show_confirm = True
-                    st.rerun()
-
-                except Exception as e:
-                    st.error(f"❌ Erreur lecture PDF : {e}")
-                    st.stop()
-
-        # ── Mode pdfplumber : extraction directe ──
-        else:
             st.session_state.show_confirm = True
+            st.rerun()
+
+        # ── Mode pdfplumber : pas d'estimation nécessaire ──
+        else:
             st.session_state.estimate     = None
+            st.session_state.show_confirm = True
             st.rerun()
 
 
 # ══════════════════════════════════════════════════════════════
-# SECTION : CONFIRMATION AVANT EXTRACTION (Gemini uniquement)
+# CONFIRMATION AVANT EXTRACTION
 # ══════════════════════════════════════════════════════════════
 if (
     not st.session_state.extraction_done
@@ -819,24 +918,37 @@ if (
     estimate  = st.session_state.estimate
     pdf_bytes = st.session_state.pdf_bytes_cache
     counter   = st.session_state.token_counter
+    api_key   = get_gemini_key()
+    banque    = st.session_state.banque_selectionnee
+    b_info    = get_banque_info(banque)
 
-    # ── Afficher l'estimation tokens (Gemini) ──
-    if method == "gemini" and estimate:
-
+    # ── Carte estimation tokens ────────────────────────────────
+    if method in ("vision", "hybrid") and estimate:
         tier_ok    = estimate.get("within_free_tier", True)
         tier_color = "#27AE60" if tier_ok else "#E74C3C"
-        tier_label = "✅ Dans le quota gratuit" \
-                     if tier_ok \
-                     else "⚠️ Peut dépasser le quota gratuit"
+        tier_label = (
+            "✅ Dans le quota gratuit Gemini"
+            if tier_ok
+            else "⚠️ Peut dépasser le quota gratuit"
+        )
+        savings = estimate.get("savings_pct", 0)
+        mode_label = (
+            "Hybride (texte)"
+            if method == "hybrid"
+            else "Vision (images)"
+        )
 
         st.markdown(f"""
         <div class="token-estimate-card">
-            <h4 style="margin:0 0 0.5rem;color:#1B3A5C">
-                📊 Estimation de consommation Gemini
+            <h4 style="margin:0 0 0.4rem;color:#1B3A5C">
+                📊 Estimation avant extraction
+                — Mode {mode_label}
             </h4>
-            <p style="color:#7F8C8D;font-size:0.85rem;margin:0 0 1rem">
-                Calculé sur le texte extrait du PDF
-                (méthode hybride — sans envoi d'images)
+            <p style="color:#7F8C8D;font-size:0.84rem;
+                      margin:0 0 0.8rem">
+                {"Mode Hybride : texte envoyé (pas d'images) → économies significatives"
+                 if method == "hybrid"
+                 else "Mode Vision : images envoyées à Gemini → précision maximale"}
             </p>
             <div class="token-grid">
                 <div class="token-metric">
@@ -867,40 +979,38 @@ if (
                         ~${estimate.get('cost_usd', 0):.4f}
                     </div>
                     <div class="token-metric-label">
-                        Coût estimé (USD)
+                        Coût USD estimé
                     </div>
                 </div>
             </div>
             <div style="background:{tier_color}18;
-                        border:1px solid {tier_color}44;
+                        border:1px solid {tier_color}55;
                         border-radius:8px;padding:0.6rem 1rem;
                         color:{tier_color};font-weight:600;
-                        font-size:0.88rem;text-align:center">
+                        font-size:0.87rem;text-align:center">
                 {tier_label}
                 &nbsp;·&nbsp;
                 ~{estimate.get('cost_fcfa', 0):.0f} FCFA
+                {"&nbsp;·&nbsp; Économie : ~" + str(savings) + "% vs mode image"
+                 if savings > 0 else ""}
             </div>
         </div>
         """, unsafe_allow_html=True)
 
-        # Comparaison avec mode image
-        savings = estimate.get("savings_pct", 0)
-        st.markdown(f"""
+    elif method == "pdfplumber":
+        st.markdown("""
         <div class="success-box">
-            💡 <b>Mode Hybride actif</b> : En utilisant le texte
-            plutôt que les images, vous économisez environ
-            <b>{savings}% de tokens</b> par rapport au mode
-            vision classique.
+            📄 <b>Mode pdfplumber</b> — Extraction gratuite,
+            aucun token consommé.
         </div>
         """, unsafe_allow_html=True)
 
-    # ── Boutons Confirmer / Annuler ──
+    # ── Boutons Confirmer / Annuler ────────────────────────────
     st.markdown("---")
     col_ok, col_cancel = st.columns(2)
-
     with col_ok:
         confirm_btn = st.button(
-            "✅ Confirmer et extraire",
+            "✅ Confirmer et lancer l'extraction",
             use_container_width=True,
             type="primary",
         )
@@ -917,73 +1027,122 @@ if (
 
     if confirm_btn:
 
-        # ── Barre de progression ──
-        progress_bar       = st.progress(0)
-        status_placeholder = st.empty()
+        # ── Barre de progression ───────────────────────────────
+        prog_bar     = st.progress(0)
+        status_ph    = st.empty()
 
-        def update_progress(step: int, message: str):
+        st.session_state.progress_bar       = prog_bar
+        st.session_state.status_placeholder = status_ph
+
+        def _progress(step: int, msg: str):
             if step > 0:
-                progress_bar.progress(min(step / 100, 1.0))
-            status_placeholder.markdown(
+                prog_bar.progress(min(step / 100, 1.0))
+            status_ph.markdown(
                 f"""<div style='text-align:center;
-                    color:#1B3A5C;padding:0.5rem;
-                    font-size:0.95rem'>{message}</div>""",
+                color:#1B3A5C;padding:0.5rem;
+                font-size:0.95rem'>{msg}</div>""",
                 unsafe_allow_html=True,
             )
 
-        # ── Extraction ──
+        # ── Lancer l'extraction ────────────────────────────────
+        df_raw = None
         try:
-            if method == "gemini":
-                api_key = get_gemini_key()
-                update_progress(5, "🤖 Initialisation Gemini AI...")
+            if method == "vision":
+                _progress(5, "🔭 Initialisation Gemini Vision...")
                 extractor = GeminiExtractor(
                     api_key=api_key,
-                    progress_callback=update_progress,
+                    mode="vision",
+                    progress_callback=_progress,
+                    verbose_debug=True,
                 )
                 df_raw = extractor.extract(pdf_bytes)
 
-                # Enregistrer la consommation réelle
-                pages  = st.session_state.pages_text or []
-                in_tok = estimate.get("input_tokens", 0) \
-                         if estimate else 0
-                out_tok = estimate.get("output_tokens", 0) \
-                          if estimate else 0
+            elif method == "hybrid":
+                _progress(5, "⚡ Initialisation Gemini Hybride...")
+                extractor = GeminiExtractor(
+                    api_key=api_key,
+                    mode="hybrid",
+                    progress_callback=_progress,
+                    verbose_debug=True,
+                )
+                df_raw = extractor.extract(pdf_bytes)
+
+            else:
+                _progress(5, "📄 Extraction pdfplumber...")
+                extractor = BankStatementExtractor(
+                    progress_callback=_progress,
+                )
+                df_raw = extractor.extract(pdf_bytes)
+                # Pas de logs de debug pour pdfplumber
+
+            # ── Sauvegarder les logs de debug ─────────────────
+            if method in ("vision", "hybrid"):
+                st.session_state.debug_logs    = (
+                    extractor.get_debug_logs()
+                )
+                st.session_state.debug_summary = (
+                    extractor.get_debug_summary()
+                )
+                st.session_state.debug_entries = (
+                    extractor.get_debug_entries()
+                )
+
+                # Enregistrer la consommation tokens
+                pages   = st.session_state.pages_text or []
+                in_tok  = (
+                    estimate.get("input_tokens", 0)
+                    if estimate else 0
+                )
+                out_tok = (
+                    estimate.get("output_tokens", 0)
+                    if estimate else 0
+                )
                 counter.record_extraction(
                     input_tokens  = in_tok,
                     output_tokens = out_tok,
-                    pages         = len(pages),
-                    file_name     = uploaded_file.name,
+                    pages         = (
+                        estimate.get("pages", 1)
+                        if estimate else 1
+                    ),
+                    file_name     = (
+                        uploaded_file.name
+                        if uploaded_file else ""
+                    ),
                 )
-
-            else:
-                update_progress(5, "📄 Extraction pdfplumber...")
-                extractor = BankStatementExtractor(
-                    progress_callback=update_progress,
-                )
-                df_raw = extractor.extract(pdf_bytes)
 
         except Exception as e:
-            progress_bar.empty()
-            status_placeholder.empty()
-            st.error(f"❌ Erreur lors de l'extraction : {str(e)}")
+            prog_bar.empty()
+            status_ph.empty()
+            st.markdown(f"""
+            <div class="error-box">
+                ❌ <b>Erreur lors de l'extraction :</b><br>
+                {str(e)}
+            </div>
+            """, unsafe_allow_html=True)
+
+            # Afficher les logs de debug si disponibles
+            if method in ("vision", "hybrid") and \
+               "extractor" in dir():
+                with st.expander(
+                    "🔍 Logs de debug (erreur)", expanded=True
+                ):
+                    st.text(extractor.get_debug_logs())
+
             st.session_state.show_confirm = False
             st.stop()
 
-        # ── Nettoyage ──
-        update_progress(92, "🧹 Nettoyage et structuration...")
+        # ── Nettoyage et finalisation ──────────────────────────
+        _progress(92, "🧹 Nettoyage et structuration...")
+
         cleaner  = DataCleaner()
         df_clean = cleaner.clean(df_raw)
         stats    = cleaner.get_statistics(df_clean)
 
-        # ── Infos compte ──
         account_info = {
-            "account_name": account_name
-                            if "account_name" in dir()
-                            else "",
-            "account_id":   account_id
-                            if "account_id" in dir()
-                            else "",
-            "banque":       st.session_state.banque_selectionnee,
+            "account_name": st.session_state.account_name,
+            "account_id":   st.session_state.account_id,
+            "banque":       banque,
+            "banque_emoji": b_info["emoji"],
             "period": (
                 f"{stats.get('periode_debut', '')} → "
                 f"{stats.get('periode_fin', '')}"
@@ -991,30 +1150,27 @@ if (
             "extraction_date": datetime.now().strftime(
                 "%d/%m/%Y à %H:%M"
             ),
-            "method": (
-                "Gemini AI (Hybride)"
-                if method == "gemini"
-                else "pdfplumber"
-            ),
+            "method": METHODES.get(method, method),
         }
 
-        # ── Sauvegarder en session ──
-        st.session_state.df_clean        = df_clean
-        st.session_state.stats           = stats
-        st.session_state.account_info    = account_info
-        st.session_state.file_name       = uploaded_file.name \
-                                           if uploaded_file else ""
-        st.session_state.extraction_done = True
-        st.session_state.show_confirm    = False
+        # ── Sauvegarder en session ─────────────────────────────
+        st.session_state.df_clean         = df_clean
+        st.session_state.stats            = stats
+        st.session_state.account_info     = account_info
+        st.session_state.file_name        = (
+            uploaded_file.name if uploaded_file else ""
+        )
+        st.session_state.extraction_done  = True
+        st.session_state.show_confirm     = False
 
-        progress_bar.progress(1.0)
-        update_progress(100, "✅ Extraction terminée !")
-        time.sleep(0.5)
+        prog_bar.progress(1.0)
+        _progress(100, "✅ Extraction terminée avec succès !")
+        time.sleep(0.6)
         st.rerun()
 
 
 # ══════════════════════════════════════════════════════════════
-# SECTION : RÉSULTATS
+# RÉSULTATS
 # ══════════════════════════════════════════════════════════════
 if st.session_state.extraction_done:
 
@@ -1022,38 +1178,55 @@ if st.session_state.extraction_done:
     stats = st.session_state.stats
     info  = st.session_state.account_info or {}
 
-    # ── DataFrame vide ──
+    rows_per_page = st.session_state.rows_per_page
+    show_chart    = st.session_state.show_chart
+    show_tokens   = st.session_state.show_tokens
+    show_debug    = st.session_state.show_debug
+
+    # ── DataFrame vide ─────────────────────────────────────────
     if df is None or df.empty:
         st.markdown("""
         <div class="error-box">
             ❌ <b>Aucune donnée extraite.</b><br>
             Vérifiez que votre PDF contient bien un tableau
-            de transactions lisible, ou essayez l'autre
-            méthode d'extraction.
+            de transactions, ou essayez une autre méthode
+            d'extraction.
         </div>
         """, unsafe_allow_html=True)
-        if st.button("🔄 Réessayer", type="primary"):
-            reset_app()
-            st.rerun()
+        col_r1, col_r2 = st.columns(2)
+        with col_r1:
+            if st.button(
+                "🔄 Réessayer", type="primary",
+                use_container_width=True
+            ):
+                reset_app()
+                st.rerun()
+        with col_r2:
+            # Afficher les logs même en cas d'échec
+            if st.session_state.debug_entries:
+                if st.button(
+                    "🔍 Voir les logs",
+                    use_container_width=True
+                ):
+                    st.session_state.show_debug = True
         st.stop()
 
-    # ── Bannière succès ──
-    method_label = info.get("method", "")
-    banque_label = info.get("banque", "")
+    # ── Bannière succès ────────────────────────────────────────
     st.markdown(f"""
     <div class="success-box">
-        ✅ <b>{len(df)} lignes extraites</b> depuis
-        <code>{st.session_state.file_name}</code>
+        ✅ <b>{len(df)} lignes extraites</b>
+        depuis <code>{st.session_state.file_name}</code>
         &nbsp;·&nbsp;
-        {banque_info['emoji']} <b>{banque_label}</b>
+        {info.get('banque_emoji', '🏦')}
+        <b>{info.get('banque', '')}</b>
         &nbsp;·&nbsp;
-        <b>{method_label}</b>
+        {info.get('method', '')}
         &nbsp;·&nbsp;
         {info.get('extraction_date', '')}
     </div>
     """, unsafe_allow_html=True)
 
-    # ── Cartes statistiques ──
+    # ── Cartes statistiques ────────────────────────────────────
     net_val = stats.get("net", 0)
     net_cls = "net-pos" if net_val >= 0 else "net-neg"
     net_ico = "📈" if net_val >= 0 else "📉"
@@ -1076,18 +1249,16 @@ if st.session_state.extraction_done:
         c3, net_cls, net_ico,
         "Flux Net",
         format_amount(net_val),
-        "Crédit - Débit"
+        "Crédit − Débit"
     )
     render_stat_card(
         c4, "count", "🔢",
         "Transactions",
         f"{stats.get('total_transactions', 0):,}".replace(",", " "),
-        "Lignes extraites"
+        "Lignes"
     )
     render_stat_card(
-        c5, "credit" if (stats.get("solde_cloture") or 0) >= 0
-            else "debit",
-        "🏦",
+        c5, "solde", "🏦",
         "Solde Final",
         format_amount(stats.get("solde_cloture")),
         info.get("banque", "")
@@ -1095,59 +1266,56 @@ if st.session_state.extraction_done:
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── Détails période ──
+    # ── Détails du relevé ──────────────────────────────────────
     with st.expander(
         "📅 Informations du relevé", expanded=False
     ):
         d1, d2, d3, d4, d5 = st.columns(5)
-        d1.metric(
-            "🏦 Banque",
-            info.get("banque", "N/A")
-        )
-        d2.metric(
-            "📅 Début",
-            stats.get("periode_debut", "N/A")
-        )
-        d3.metric(
-            "📅 Fin",
-            stats.get("periode_fin", "N/A")
-        )
+        d1.metric("🏦 Banque",   info.get("banque", "N/A"))
+        d2.metric("📅 Début",    stats.get("periode_debut", "N/A"))
+        d3.metric("📅 Fin",      stats.get("periode_fin", "N/A"))
         d4.metric(
             "🔓 Solde ouverture",
-            format_amount(stats.get("solde_ouverture"))
-            or "N/A"
+            format_amount(stats.get("solde_ouverture")) or "N/A"
         )
         d5.metric(
             "🔒 Solde clôture",
-            format_amount(stats.get("solde_cloture"))
-            or "N/A"
+            format_amount(stats.get("solde_cloture")) or "N/A"
         )
+        if info.get("account_name"):
+            st.caption(
+                f"👤 {info['account_name']} — "
+                f"N° {info.get('account_id', 'N/A')}"
+            )
 
-    # ── Initialiser exporter ──
+    # ── Instancier l'exporteur ─────────────────────────────────
     exporter = BankStatementExporter()
 
-    # ── Toolbar ──
+    # ── Barre d'outils ─────────────────────────────────────────
     st.markdown("### 📊 Données extraites")
-    tb1, tb2, tb3, tb4, tb5 = st.columns([3, 1.2, 1.2, 1, 1])
+    tb1, tb2, tb3, tb4, tb5 = st.columns([3, 1.3, 1.3, 1, 1])
 
     with tb1:
         search = st.text_input(
             "Recherche",
             placeholder=(
-                "🔍 Filtrer par libellé, référence, montant..."
+                "🔍 Filtrer par libellé, référence, "
+                "montant..."
             ),
             label_visibility="collapsed",
         )
 
     with tb2:
         excel_bytes = exporter.to_excel(df, stats, info)
+        fname_excel = (
+            f"releve_"
+            f"{info.get('banque', 'banque').replace(' ', '_')}_"
+            f"{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+        )
         st.download_button(
-            label="📥 Télécharger Excel",
+            label="📥 Excel",
             data=excel_bytes,
-            file_name=(
-                f"releve_{banque_label.replace(' ', '_')}_"
-                f"{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
-            ),
+            file_name=fname_excel,
             mime=(
                 "application/vnd.openxmlformats-"
                 "officedocument.spreadsheetml.sheet"
@@ -1157,25 +1325,26 @@ if st.session_state.extraction_done:
 
     with tb3:
         csv_bytes = exporter.to_csv(df)
+        fname_csv = (
+            f"releve_"
+            f"{info.get('banque', 'banque').replace(' ', '_')}_"
+            f"{datetime.now().strftime('%Y%m%d_%H%M')}.csv"
+        )
         st.download_button(
-            label="📄 Télécharger CSV",
+            label="📄 CSV",
             data=csv_bytes,
-            file_name=(
-                f"releve_{banque_label.replace(' ', '_')}_"
-                f"{datetime.now().strftime('%Y%m%d_%H%M')}.csv"
-            ),
+            file_name=fname_csv,
             mime="text/csv",
             use_container_width=True,
         )
 
     with tb4:
-        total_rows = len(df)
         st.markdown(f"""
         <div style="text-align:center;padding:0.5rem;
-                    background:#F0F4F8;border-radius:8px;
-                    font-size:0.85rem;font-weight:600;
-                    color:#1B3A5C">
-            {total_rows} lignes
+                    background:#EBF5FB;border-radius:8px;
+                    font-size:0.85rem;font-weight:700;
+                    color:#1B3A5C;margin-top:2px">
+            {len(df)} lignes
         </div>
         """, unsafe_allow_html=True)
 
@@ -1183,12 +1352,12 @@ if st.session_state.extraction_done:
         if st.button(
             "🔄 Nouveau",
             use_container_width=True,
-            help="Extraire un nouveau relevé"
+            help="Extraire un nouveau relevé",
         ):
             reset_app()
             st.rerun()
 
-    # ── Filtrage ──
+    # ── Filtrage ───────────────────────────────────────────────
     df_display = df.copy()
     if search:
         mask = df_display.apply(
@@ -1203,7 +1372,7 @@ if st.session_state.extraction_done:
             f"pour « {search} »"
         )
 
-    # ── Pagination ──
+    # ── Pagination ─────────────────────────────────────────────
     total       = len(df_display)
     total_pages = max(1, -(-total // rows_per_page))
 
@@ -1224,7 +1393,7 @@ if st.session_state.extraction_done:
     end     = min(start + rows_per_page, total)
     df_page = df_display.iloc[start:end]
 
-    # ── Tableau principal ──
+    # ── Tableau principal ──────────────────────────────────────
     st.dataframe(
         style_dataframe(df_page),
         use_container_width=True,
@@ -1232,20 +1401,22 @@ if st.session_state.extraction_done:
         hide_index=True,
     )
     st.caption(
-        f"📋 Affichage des lignes {start+1} à {end} "
-        f"sur {total} au total"
+        f"📋 Lignes {start + 1} à {end} sur {total} au total"
     )
 
-    # ── Éditeur manuel ──
+    # ══════════════════════════════════════════════════════════
+    # ÉDITEUR MANUEL
+    # ══════════════════════════════════════════════════════════
     with st.expander(
-        "✏️ Corriger les données manuellement", expanded=False
+        "✏️ Corriger les données manuellement",
+        expanded=False
     ):
         st.markdown("""
         <div class="info-box">
-            💡 <b>Mode édition</b> : Cliquez sur
-            n'importe quelle cellule pour la modifier.
-            Ajoutez ou supprimez des lignes avec les
-            boutons + et 🗑️
+            💡 <b>Mode édition</b> : cliquez sur une cellule
+            pour la modifier. Utilisez les boutons
+            <b>+</b> et <b>🗑️</b> pour ajouter / supprimer
+            des lignes.
         </div>
         """, unsafe_allow_html=True)
 
@@ -1255,6 +1426,24 @@ if st.session_state.extraction_done:
             num_rows="dynamic",
             height=420,
             column_config={
+                "Date": st.column_config.TextColumn(
+                    "Date",
+                    help="Format : JJ/MM/AAAA",
+                    max_chars=10,
+                ),
+                "Référence": st.column_config.TextColumn(
+                    "Référence",
+                    max_chars=20,
+                ),
+                "Libellé": st.column_config.TextColumn(
+                    "Libellé",
+                    max_chars=200,
+                ),
+                "Date_Valeur": st.column_config.TextColumn(
+                    "Date Valeur",
+                    help="Format : JJ/MM/AAAA",
+                    max_chars=10,
+                ),
                 "Débit": st.column_config.NumberColumn(
                     "Débit",
                     format="%.0f",
@@ -1269,21 +1458,11 @@ if st.session_state.extraction_done:
                     "Solde",
                     format="%.0f",
                 ),
-                "Date": st.column_config.TextColumn(
-                    "Date",
-                    help="Format : JJ/MM/AAAA",
-                    max_chars=10,
-                ),
-                "Date_Valeur": st.column_config.TextColumn(
-                    "Date Valeur",
-                    help="Format : JJ/MM/AAAA",
-                    max_chars=10,
-                ),
             },
         )
 
-        sc1, sc2, sc3 = st.columns([2, 2, 1])
-        with sc1:
+        ec1, ec2, ec3 = st.columns([2, 2, 1])
+        with ec1:
             if st.button(
                 "💾 Sauvegarder les modifications",
                 use_container_width=True,
@@ -1294,10 +1473,10 @@ if st.session_state.extraction_done:
                 st.session_state.stats = (
                     cleaner.get_statistics(edited_df)
                 )
-                st.success("✅ Données mises à jour !")
+                st.success("✅ Modifications sauvegardées !")
                 st.rerun()
-        with sc2:
-            # Télécharger les données éditées
+
+        with ec2:
             edited_excel = exporter.to_excel(
                 edited_df, stats, info
             )
@@ -1315,13 +1494,14 @@ if st.session_state.extraction_done:
                 ),
                 use_container_width=True,
             )
-        with sc3:
-            if st.button(
-                "↩️ Annuler", use_container_width=True
-            ):
+
+        with ec3:
+            if st.button("↩️ Annuler", use_container_width=True):
                 st.rerun()
 
-    # ── Graphique évolution du solde ──
+    # ══════════════════════════════════════════════════════════
+    # GRAPHIQUE ÉVOLUTION DU SOLDE
+    # ══════════════════════════════════════════════════════════
     if show_chart:
         with st.expander(
             "📈 Évolution du solde dans le temps",
@@ -1340,27 +1520,25 @@ if st.session_state.extraction_done:
                     errors="coerce",
                 )
                 df_chart = (
-                    df_chart.dropna(subset=["_dt", "Solde"])
+                    df_chart
+                    .dropna(subset=["_dt", "Solde"])
                     .sort_values("_dt")
                 )
 
                 if len(df_chart) >= 2:
-                    # Graphique principal
                     st.line_chart(
                         df_chart.set_index("_dt")["Solde"],
                         use_container_width=True,
                         height=320,
                         color="#1B3A5C",
                     )
-
-                    # Stats du graphique
                     g1, g2, g3 = st.columns(3)
                     g1.metric(
-                        "📈 Solde max",
+                        "📈 Solde maximum",
                         format_amount(df_chart["Solde"].max()),
                     )
                     g2.metric(
-                        "📉 Solde min",
+                        "📉 Solde minimum",
                         format_amount(df_chart["Solde"].min()),
                     )
                     g3.metric(
@@ -1374,17 +1552,20 @@ if st.session_state.extraction_done:
                     )
             else:
                 st.info(
-                    "Aucune donnée de date disponible "
-                    "pour le graphique."
+                    "Aucune date disponible "
+                    "pour générer le graphique."
                 )
 
-    # ── Dashboard tokens Gemini ──
+    # ══════════════════════════════════════════════════════════
+    # DASHBOARD TOKENS GEMINI
+    # ══════════════════════════════════════════════════════════
     if show_tokens:
         with st.expander(
             "📊 Utilisation des tokens Gemini",
-            expanded=False,
+            expanded=False
         ):
             counter = st.session_state.token_counter
+
             if counter:
                 sess = counter.get_session_stats()
 
@@ -1396,22 +1577,23 @@ if st.session_state.extraction_done:
                         sess["total_requests"],
                     )
                     tm2.metric(
-                        "🔤 Tokens (input)",
+                        "🔤 Tokens consommés",
                         f"{sess['total_input_tokens']:,}",
                     )
                     tm3.metric(
-                        "💰 Coût USD",
+                        "💰 Coût total USD",
                         f"${sess['total_cost_usd']:.4f}",
                     )
                     tm4.metric(
-                        "💵 Coût FCFA",
+                        "💵 Coût total FCFA",
                         f"~{sess['total_cost_fcfa']:.0f}",
                     )
 
-                    # Barre quota gratuit
+                    # Barre de progression quota
                     used_pct = min(
-                        sess["total_input_tokens"] / 500_000
-                        * 100, 100
+                        sess["total_input_tokens"]
+                        / 500_000 * 100,
+                        100,
                     )
                     bar_clr = (
                         "#27AE60" if used_pct < 70
@@ -1421,30 +1603,31 @@ if st.session_state.extraction_done:
                     st.markdown(f"""
                     <div style="margin:1rem 0">
                         <div style="display:flex;
-                                    justify-content:space-between;
-                                    margin-bottom:4px;
-                                    font-size:0.85rem;
-                                    font-weight:600">
-                            <span>Quota gratuit mensuel</span>
+                            justify-content:space-between;
+                            margin-bottom:4px;
+                            font-size:0.85rem;font-weight:600">
+                            <span>
+                                Quota gratuit mensuel
+                            </span>
                             <span style="color:#7F8C8D">
                                 {sess['total_input_tokens']:,}
                                 / 500 000 tokens
                             </span>
                         </div>
                         <div style="background:#E0E0E0;
-                                    border-radius:10px;
-                                    height:10px;overflow:hidden">
+                            border-radius:10px;height:10px;
+                            overflow:hidden">
                             <div style="width:{used_pct:.1f}%;
-                                        height:100%;
-                                        background:{bar_clr};
-                                        border-radius:10px">
+                                height:100%;
+                                background:{bar_clr};
+                                border-radius:10px;
+                                transition:width 0.5s ease">
                             </div>
                         </div>
                         <div style="text-align:right;
-                                    font-size:0.78rem;
-                                    color:{bar_clr};
-                                    margin-top:3px;
-                                    font-weight:600">
+                            font-size:0.78rem;
+                            color:{bar_clr};margin-top:3px;
+                            font-weight:600">
                             {used_pct:.1f}% utilisé
                         </div>
                     </div>
@@ -1470,8 +1653,10 @@ if st.session_state.extraction_done:
                             hide_index=True,
                         )
 
-                    # Reset compteurs
-                    if st.button("🔄 Remettre à zéro"):
+                    # Reset
+                    if st.button(
+                        "🔄 Remettre les compteurs à zéro"
+                    ):
                         counter.reset()
                         st.success("✅ Compteurs remis à zéro")
                         st.rerun()
@@ -1482,28 +1667,186 @@ if st.session_state.extraction_done:
                         "durant cette session."
                     )
 
-                # Conseils économies
+                # Conseils
                 with st.expander(
                     "💡 Conseils pour économiser les tokens"
                 ):
                     st.markdown("""
-                    | Pages | Tokens estimés | Coût USD |
-                    |-------|---------------|----------|
-                    | 1 page | ~400 | ~$0.00003 |
-                    | 5 pages | ~2 000 | ~$0.00015 |
-                    | 12 pages | ~5 000 | ~$0.00038 |
-                    | 50 pages | ~20 000 | ~$0.0015 |
+                    | Pages | Mode | Tokens | Coût USD |
+                    |-------|------|--------|----------|
+                    | 1 | Vision | ~2 800 | ~$0.0002 |
+                    | 1 | Hybride | ~500 | ~$0.00004 |
+                    | 12 | Vision | ~33 000 | ~$0.003 |
+                    | 12 | Hybride | ~6 000 | ~$0.0005 |
 
                     **🆓 Quota gratuit Gemini Flash :**
-                    - 15 requêtes / minute
-                    - 1 500 requêtes / jour
-                    - Largement suffisant pour usage personnel
+                    15 req/min — 1 500 req/jour
 
                     **💡 Astuces :**
-                    - Le mode Hybride économise ~85% vs vision
+                    - Utilisez le mode **Hybride** pour économiser
                     - Traitez un relevé à la fois
-                    - Gemini Flash est 10x moins cher que Pro
+                    - gemini-1.5-flash est 10× moins cher que pro
                     """)
+
+    # ══════════════════════════════════════════════════════════
+    # LOGS DE DÉBOGAGE
+    # ══════════════════════════════════════════════════════════
+    if show_debug:
+        with st.expander(
+            "🔍 Logs de débogage de l'extraction",
+            expanded=False
+        ):
+            summary = st.session_state.get(
+                "debug_summary", {}
+            )
+            entries = st.session_state.get(
+                "debug_entries", []
+            )
+
+            if not entries:
+                st.info(
+                    "Aucun log disponible. "
+                    "Les logs sont générés avec les modes "
+                    "Gemini Vision et Hybride."
+                )
+            else:
+                # Résumé
+                ds1, ds2, ds3, ds4 = st.columns(4)
+                ds1.metric(
+                    "📋 Logs total",
+                    summary.get("total_logs", 0)
+                )
+                ds2.metric(
+                    "▶️ Étapes",
+                    summary.get("steps", 0)
+                )
+                ds3.metric(
+                    "⚠️ Warnings",
+                    summary.get("warnings", 0)
+                )
+                ds4.metric(
+                    "❌ Erreurs",
+                    summary.get("errors", 0)
+                )
+
+                # Erreurs critiques
+                if summary.get("has_errors"):
+                    st.markdown("**❌ Erreurs détectées :**")
+                    for err in summary.get(
+                        "error_details", []
+                    ):
+                        st.error(
+                            f"**{err['msg']}**\n\n"
+                            f"{err.get('detail', '')[:400]}"
+                        )
+
+                st.markdown("---")
+
+                # Filtres
+                fl1, fl2 = st.columns(2)
+                with fl1:
+                    level_filter = st.multiselect(
+                        "Filtrer par niveau",
+                        options=[
+                            "ALL", "ERROR", "WARNING",
+                            "SUCCESS", "API", "DATA",
+                            "TOKEN", "DEBUG", "INFO", "STEP",
+                        ],
+                        default=[
+                            "ERROR", "WARNING",
+                            "SUCCESS", "API", "DATA", "STEP",
+                        ],
+                    )
+                with fl2:
+                    search_log = st.text_input(
+                        "Rechercher dans les logs",
+                        placeholder="mot-clé...",
+                    )
+
+                # Appliquer les filtres
+                filtered = entries
+                if level_filter and "ALL" not in level_filter:
+                    filtered = [
+                        e for e in filtered
+                        if e["level"] in level_filter
+                    ]
+                if search_log:
+                    sl = search_log.lower()
+                    filtered = [
+                        e for e in filtered
+                        if sl in e["message"].lower()
+                        or sl in e.get("detail", "").lower()
+                    ]
+
+                st.caption(
+                    f"📋 {len(filtered)} log(s) affiché(s) "
+                    f"sur {len(entries)} total"
+                )
+
+                # Couleurs par niveau
+                COLOR_MAP = {
+                    "ERROR":   "#FDEDEC",
+                    "WARNING": "#FEF9E7",
+                    "SUCCESS": "#EAFAF1",
+                    "API":     "#EBF5FB",
+                    "DATA":    "#F4ECF7",
+                    "TOKEN":   "#FEF5E7",
+                    "STEP":    "#E8F4FD",
+                    "DEBUG":   "#F8F9FA",
+                    "INFO":    "#FFFFFF",
+                }
+
+                # Afficher les logs
+                for entry in filtered:
+                    bg = COLOR_MAP.get(
+                        entry["level"], "#FFFFFF"
+                    )
+                    detail_html = ""
+                    detail_txt  = entry.get("detail", "")
+                    if detail_txt:
+                        # Tronquer si trop long
+                        if len(detail_txt) > 600:
+                            detail_txt = (
+                                detail_txt[:600]
+                                + "... [tronqué]"
+                            )
+                        detail_html = (
+                            f'<div class="log-detail">'
+                            f'{detail_txt}</div>'
+                        )
+
+                    st.markdown(f"""
+                    <div class="log-entry"
+                         style="background:{bg}">
+                        <span style="color:#7F8C8D;
+                                     font-size:0.72rem">
+                            [{entry['timestamp']}]
+                        </span>
+                        &nbsp;
+                        <b>{entry['icon']}</b>
+                        &nbsp;
+                        {entry['message']}
+                        {detail_html}
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                # Télécharger les logs
+                logs_text = st.session_state.get(
+                    "debug_logs", ""
+                )
+                if logs_text:
+                    st.markdown("---")
+                    st.download_button(
+                        "📥 Télécharger les logs complets (.txt)",
+                        data=logs_text,
+                        file_name=(
+                            f"debug_logs_"
+                            f"{datetime.now().strftime('%Y%m%d_%H%M')}"
+                            f".txt"
+                        ),
+                        mime="text/plain",
+                        use_container_width=False,
+                    )
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1511,12 +1854,15 @@ if st.session_state.extraction_done:
 # ══════════════════════════════════════════════════════════════
 st.markdown("""
 <div class="footer">
-    🏦 <b>Bank Statement Extractor</b> v3.0 &nbsp;|&nbsp;
-    🇨🇲 Compatible toutes banques du Cameroun &nbsp;|&nbsp;
+    🏦 <b>Bank Statement Extractor</b> v3.1.0
+    &nbsp;|&nbsp;
+    🇨🇲 Compatible toutes banques du Cameroun
+    &nbsp;|&nbsp;
     ✨ Powered by Google Gemini AI + pdfplumber<br>
-    <span style="font-size:0.75rem">
-        Financial House · Afriland · SCB · BICEC · UBA ·
-        Ecobank · SGBC · BGFI · CCA · Atlantic Bank
+    <span style="font-size:0.75rem;color:#D5D8DC">
+        Financial House · Afriland First Bank · SCB ·
+        BICEC · UBA · Ecobank · SGBC · BGFI ·
+        CCA Bank · Atlantic Bank
     </span>
 </div>
 """, unsafe_allow_html=True)
