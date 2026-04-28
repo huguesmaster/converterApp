@@ -48,6 +48,7 @@ class TokenCounter:
         output_tokens: int,
         pages:         int,
         file_name:     str = ""
+        self._init_session()
     ):
         """
         Enregistre les tokens utilisés pour une extraction.
@@ -112,6 +113,7 @@ class TokenCounter:
 
     def get_session_stats(self) -> dict:
         """Retourne les stats de la session courante."""
+         self._init_session()
         stats = st.session_state.token_stats
         total_in  = stats['total_input_tokens']
         total_out = stats['total_output_tokens']
