@@ -1,10 +1,8 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
 ║         EXTRACTEUR GEMINI — Bank Statement Extractor         ║
-║         Deux modes disponibles :                             ║
-║           1. HYBRIDE  : pdfplumber texte + Gemini Text       ║
-║           2. VISION   : PDF → Images → Gemini Vision         ║
-║         Version : 3.1.0                                      ║
+║         Modes : Vision | Hybride                             ║
+║         Version : 3.2.0 — Correction extraction Vision       ║
 ╚══════════════════════════════════════════════════════════════╝
 """
 
@@ -25,7 +23,6 @@ try:
     PDF2IMAGE_AVAILABLE = True
 except ImportError:
     PDF2IMAGE_AVAILABLE = False
-    print("⚠️  pdf2image non disponible — mode vision désactivé")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -33,10 +30,7 @@ except ImportError:
 # ══════════════════════════════════════════════════════════════
 
 class DebugLogger:
-    """
-    Logger structuré pour tracer chaque étape de l'extraction.
-    Stocke les logs en mémoire pour affichage dans Streamlit.
-    """
+    """Logger structuré pour tracer chaque étape."""
 
     LEVELS = {
         "INFO":    "ℹ️",
@@ -52,90 +46,77 @@ class DebugLogger:
 
     def __init__(self, verbose: bool = True):
         self.verbose  = verbose
-        self.logs     = []          # Historique complet
-        self.errors   = []          # Erreurs uniquement
-        self.warnings = []          # Avertissements uniquement
-        self._step    = 0           # Compteur d'étapes
+        self.logs     = []
+        self.errors   = []
+        self.warnings = []
+        self._step    = 0
 
-    # ── Méthodes de log ──────────────────────────────────────
-
-    def info(self, msg: str, detail: str = ""):
+    def info(self, msg, detail=""):
         self._log("INFO", msg, detail)
 
-    def success(self, msg: str, detail: str = ""):
+    def success(self, msg, detail=""):
         self._log("SUCCESS", msg, detail)
 
-    def warning(self, msg: str, detail: str = ""):
+    def warning(self, msg, detail=""):
         self._log("WARNING", msg, detail)
         self.warnings.append(msg)
 
-    def error(self, msg: str, detail: str = "", exc: Exception = None):
-        full_detail = detail
+    def error(self, msg, detail="", exc=None):
+        full = detail
         if exc:
-            full_detail += f"\n{type(exc).__name__}: {str(exc)}"
-            full_detail += f"\n{traceback.format_exc()}"
-        self._log("ERROR", msg, full_detail)
-        self.errors.append({"msg": msg, "detail": full_detail})
+            full += f"\n{type(exc).__name__}: {str(exc)}"
+            full += f"\n{traceback.format_exc()}"
+        self._log("ERROR", msg, full)
+        self.errors.append({"msg": msg, "detail": full})
 
-    def debug(self, msg: str, detail: str = ""):
+    def debug(self, msg, detail=""):
         self._log("DEBUG", msg, detail)
 
-    def step(self, msg: str):
+    def step(self, msg):
         self._step += 1
         self._log("STEP", f"[Étape {self._step}] {msg}", "")
 
-    def data(self, label: str, value):
-        """Log une valeur de données (tronquée si trop longue)."""
+    def data(self, label, value):
         val_str = str(value)
-        if len(val_str) > 500:
-            val_str = val_str[:500] + "... [tronqué]"
+        if len(val_str) > 800:
+            val_str = val_str[:800] + "... [tronqué]"
         self._log("DATA", label, val_str)
 
-    def api(self, msg: str, detail: str = ""):
+    def api(self, msg, detail=""):
         self._log("API", msg, detail)
 
-    def token(self, msg: str, detail: str = ""):
+    def token(self, msg, detail=""):
         self._log("TOKEN", msg, detail)
 
-    def separator(self, label: str = ""):
-        """Séparateur visuel dans les logs."""
-        sep = "─" * 50
-        entry = {
-            "level":     "INFO",
-            "icon":      "─",
-            "message":   f"{sep} {label} {sep}" if label else sep,
-            "detail":    "",
-            "timestamp": time.strftime("%H:%M:%S"),
-        }
-        self.logs.append(entry)
+    def separator(self, label=""):
+        sep = "─" * 40
+        self._log(
+            "INFO",
+            f"{sep} {label} {sep}" if label else sep,
+            ""
+        )
         if self.verbose:
             print(f"\n{'─'*20} {label} {'─'*20}")
 
-    # ── Méthode interne ──────────────────────────────────────
-
-    def _log(self, level: str, msg: str, detail: str = ""):
+    def _log(self, level, msg, detail=""):
         icon = self.LEVELS.get(level, "•")
         ts   = time.strftime("%H:%M:%S")
-
         entry = {
             "level":     level,
             "icon":      icon,
-            "message":   msg,
-            "detail":    detail,
+            "message":   str(msg),
+            "detail":    str(detail),
             "timestamp": ts,
         }
         self.logs.append(entry)
-
-        # Afficher dans la console Python
         if self.verbose:
             print(f"[{ts}] {icon} {msg}")
             if detail:
-                for line in detail.split("\n")[:5]:
-                    print(f"       {line}")
+                for line in str(detail).split("\n")[:5]:
+                    if line.strip():
+                        print(f"       {line}")
 
-    # ── Résumé ───────────────────────────────────────────────
-
-    def get_summary(self) -> dict:
+    def get_summary(self):
         return {
             "total_logs":    len(self.logs),
             "errors":        len(self.errors),
@@ -145,8 +126,7 @@ class DebugLogger:
             "error_details": self.errors,
         }
 
-    def get_logs_as_text(self) -> str:
-        """Retourne tous les logs en texte brut."""
+    def get_logs_as_text(self):
         lines = []
         for log in self.logs:
             line = (
@@ -162,72 +142,69 @@ class DebugLogger:
 
 
 # ══════════════════════════════════════════════════════════════
-# EXTRACTEUR GEMINI PRINCIPAL
+# EXTRACTEUR GEMINI
 # ══════════════════════════════════════════════════════════════
 
 class GeminiExtractor:
     """
     Extracteur de relevés bancaires via Google Gemini.
-
-    Modes disponibles :
-    ┌─────────────────────────────────────────────────────┐
-    │ MODE HYBRIDE (mode="hybrid")                        │
-    │   PDF → pdfplumber → Texte brut → Gemini Text      │
-    │   ✅ ~85% moins de tokens   ✅ Rapide               │
-    │   ⚠️  Nécessite PDF texte natif lisible             │
-    ├─────────────────────────────────────────────────────┤
-    │ MODE VISION (mode="vision")                         │
-    │   PDF → Images HD → Gemini Vision                   │
-    │   ✅ Fonctionne sur tout PDF (natif + scanné)       │
-    │   ✅ Lit comme un humain                            │
-    │   ⚠️  Plus de tokens (images envoyées)              │
-    └─────────────────────────────────────────────────────┘
+    Mode Vision  : PDF → Images → Gemini Vision (multimodal)
+    Mode Hybride : PDF → Texte pdfplumber → Gemini Text
     """
 
-    # ── Prompt optimisé pour texte brut (mode Hybride) ──────
-    PROMPT_TEXT = """Tu es un expert en extraction de données bancaires.
-On te donne le texte brut extrait d'une page de relevé bancaire.
+    # ── Prompt Vision ────────────────────────────────────────
+    PROMPT_VISION = """Tu es un expert comptable spécialisé en extraction de données bancaires.
+Tu reçois l'IMAGE d'une page de relevé bancaire camerounais.
 
-COLONNES DU TABLEAU (dans l'ordre d'apparition dans le PDF) :
+OBJECTIF : Extraire TOUTES les lignes du tableau de transactions visible.
+
+STRUCTURE DU TABLEAU (colonnes de gauche à droite) :
 Date | Batch/Ref | Libellé | D.Valeur | Débit | Crédit | Solde
 
-RÈGLES STRICTES :
-1. Extraire TOUTES les lignes de transaction visibles
-2. IGNORER ces lignes :
-   - En-têtes de colonnes (Date, Batch/Ref, Libellé, D.Valeur, Débit, Crédit, Solde)
-   - Ligne TOTAUX ou TOTAL
-   - Informations banque (Financial House, Branch ID, Account ID, Periode Du, Print Date, Page Num, Printed By, Working Date, BR.Net)
-3. INCLURE : "Solde d'ouverture" et "Solde de clôture"
-4. Montants : supprimer TOUS les espaces → "24 553 342" devient 24553342
-5. Si colonne Débit vide pour cette ligne → null
-6. Si colonne Crédit vide pour cette ligne → null
-7. Les frais (SMS Pack, TVA, Historique client) → toujours Débit, jamais Crédit
-8. VERST.//, RET.//, Interets Crediteurs → souvent Crédit
+INSTRUCTIONS :
+1. Lis chaque ligne du tableau de haut en bas
+2. Pour chaque ligne de transaction, extrais les 7 champs
+3. IGNORE : ligne d'en-tête, ligne TOTAUX, texte hors tableau
+4. INCLUS : "Solde d'ouverture" et "Solde de clôture"
+5. Montants : SUPPRIME les espaces → "24 553 342" → 24553342
+6. Colonne DÉBIT vide → mettre null (pas 0)
+7. Colonne CRÉDIT vide → mettre null (pas 0)
+8. Ne confonds JAMAIS Débit et Crédit : regarde la colonne exacte
+9. Les frais (SMS Pack, TVA, Historique) → DÉBIT, pas crédit
+10. VERST.//, RET.//, Interets Crediteurs → vérifie la colonne
 
-FORMAT DE RÉPONSE — JSON uniquement, sans markdown, sans explication :
-{"transactions":[{"date":"JJ/MM/AAAA","reference":"XXX/","libelle":"texte complet","date_valeur":"JJ/MM/AAAA","debit":null,"credit":64000,"solde":24617342}]}"""
+FORMAT DE RÉPONSE :
+Retourne UNIQUEMENT le JSON suivant, sans texte avant ni après :
 
-    # ── Prompt optimisé pour images (mode Vision) ────────────
-    PROMPT_VISION = """Tu es un expert en extraction de données bancaires.
-On te fournit une IMAGE d'une page de relevé bancaire.
+{"transactions":[{"date":"JJ/MM/AAAA","reference":"XXX/","libelle":"description","date_valeur":"JJ/MM/AAAA","debit":null,"credit":64000,"solde":24617342}]}
 
-COLONNES DU TABLEAU (dans l'ordre de gauche à droite) :
+Si aucune transaction trouvée : {"transactions":[]}"""
+
+    # ── Prompt Texte (Hybride) ───────────────────────────────
+    PROMPT_TEXT = """Tu es un expert comptable spécialisé en extraction de données bancaires.
+Tu reçois le TEXTE BRUT d'une page de relevé bancaire camerounais.
+
+OBJECTIF : Extraire TOUTES les lignes du tableau de transactions.
+
+STRUCTURE DU TABLEAU :
 Date | Batch/Ref | Libellé | D.Valeur | Débit | Crédit | Solde
 
-RÈGLES STRICTES :
-1. Lire VISUELLEMENT chaque ligne du tableau
-2. Extraire TOUTES les lignes de transactions
-3. IGNORER : en-têtes de colonnes, ligne TOTAUX, informations banque en haut/bas de page
-4. INCLURE : "Solde d'ouverture" et "Solde de clôture"
-5. Montants : supprimer TOUS les espaces → "24 553 342" devient 24553342
-6. Débit : montant dans la colonne DÉBIT → si vide = null
-7. Crédit : montant dans la colonne CRÉDIT → si vide = null
-8. Ne jamais confondre Débit et Crédit : regarder la COLONNE, pas le montant
-9. Les frais (SMS Pack, TVA, Historique client) → Débit
-10. VERST.//, RET.//, Interets Crediteurs → vérifier visuellement la colonne
+INSTRUCTIONS :
+1. Identifie et extrais chaque ligne de transaction
+2. IGNORE : en-têtes de colonnes, ligne TOTAUX, métadonnées banque
+3. INCLUS : "Solde d'ouverture" et "Solde de clôture"
+4. Montants : SUPPRIME les espaces → "24 553 342" → 24553342
+5. Colonne DÉBIT vide → null
+6. Colonne CRÉDIT vide → null
+7. Les frais (SMS Pack, TVA, Historique) → DÉBIT
+8. VERST.//, RET.//, Interets Crediteurs → souvent CRÉDIT
 
-FORMAT DE RÉPONSE — JSON uniquement, sans markdown :
-{"transactions":[{"date":"JJ/MM/AAAA","reference":"XXX/","libelle":"texte complet","date_valeur":"JJ/MM/AAAA","debit":null,"credit":64000,"solde":24617342}]}"""
+FORMAT DE RÉPONSE :
+Retourne UNIQUEMENT le JSON, sans texte avant ni après :
+
+{"transactions":[{"date":"JJ/MM/AAAA","reference":"XXX/","libelle":"description","date_valeur":"JJ/MM/AAAA","debit":null,"credit":64000,"solde":24617342}]}
+
+Si aucune transaction : {"transactions":[]}"""
 
     def __init__(
         self,
@@ -236,25 +213,17 @@ FORMAT DE RÉPONSE — JSON uniquement, sans markdown :
         progress_callback       = None,
         verbose_debug:     bool = True,
     ):
-        """
-        Args:
-            api_key:           Clé API Google Gemini
-            mode:              "hybrid" ou "vision"
-            progress_callback: fonction(step:int, message:str)
-            verbose_debug:     Afficher les logs dans la console
-        """
-        self.api_key   = api_key
-        self.mode      = mode
+        self.api_key           = api_key
+        self.mode              = mode
         self.progress_callback = progress_callback
-        self._cache    = {}
+        self._cache            = {}
+        self.logger            = DebugLogger(verbose=verbose_debug)
 
-        # Initialiser le logger
-        self.logger = DebugLogger(verbose=verbose_debug)
-
-        # Configurer Gemini
-        self.logger.step("Configuration de l'API Gemini")
+        # ── Configurer Gemini ─────────────────────────────────
+        self.logger.step("Configuration API Gemini")
         try:
             genai.configure(api_key=api_key)
+
             self.model = genai.GenerativeModel(
                 model_name="gemini-2.5-flash-lite",
                 generation_config=genai.GenerationConfig(
@@ -273,172 +242,406 @@ FORMAT DE RÉPONSE — JSON uniquement, sans markdown :
                         "threshold": "BLOCK_NONE",
                     },
                     {
-                        "category":  (
-                            "HARM_CATEGORY_SEXUALLY_EXPLICIT"
-                        ),
+                        "category":  "HARM_CATEGORY_SEXUALLY_EXPLICIT",
                         "threshold": "BLOCK_NONE",
                     },
                     {
-                        "category":  (
-                            "HARM_CATEGORY_DANGEROUS_CONTENT"
-                        ),
+                        "category":  "HARM_CATEGORY_DANGEROUS_CONTENT",
                         "threshold": "BLOCK_NONE",
                     },
                 ],
             )
             self.logger.success(
-                "Gemini configuré",
+                "Gemini configuré avec succès",
                 f"Modèle : gemini-1.5-flash | Mode : {mode}"
             )
         except Exception as e:
             self.logger.error(
-                "Échec de la configuration Gemini",
-                exc=e
+                "Échec configuration Gemini", exc=e
             )
             raise
 
     # ──────────────────────────────────────────────────────────
-    # MISE À JOUR DE LA PROGRESSION
-    # ──────────────────────────────────────────────────────────
-
-    def _update_progress(self, step: int, message: str):
+    def _update_progress(self, step: int, msg: str):
         if self.progress_callback:
-            self.progress_callback(step, message)
+            self.progress_callback(step, msg)
 
     # ══════════════════════════════════════════════════════════
-    # POINT D'ENTRÉE PRINCIPAL
+    # POINT D'ENTRÉE
     # ══════════════════════════════════════════════════════════
 
     def extract(self, pdf_bytes: bytes) -> pd.DataFrame:
-        """
-        Lance l'extraction selon le mode configuré.
-
-        Returns:
-            DataFrame avec colonnes :
-            Date, Référence, Libellé, Date_Valeur,
-            Débit, Crédit, Solde
-        """
         self.logger.separator("DÉBUT EXTRACTION")
         self.logger.info(
-            f"Mode sélectionné : {self.mode.upper()}",
+            f"Mode : {self.mode.upper()}",
             f"Taille PDF : {len(pdf_bytes):,} bytes "
             f"({len(pdf_bytes)/1024:.1f} KB)"
         )
-
         if self.mode == "hybrid":
             return self._extract_hybrid(pdf_bytes)
-        elif self.mode == "vision":
-            return self._extract_vision(pdf_bytes)
-        else:
+        return self._extract_vision(pdf_bytes)
+
+    # ══════════════════════════════════════════════════════════
+    # MODE VISION
+    # ══════════════════════════════════════════════════════════
+
+    def _extract_vision(self, pdf_bytes: bytes) -> pd.DataFrame:
+        self.logger.separator("MODE VISION")
+        self._update_progress(3, "🖼️ Conversion PDF en images...")
+
+        # ── Vérifier pdf2image ────────────────────────────────
+        if not PDF2IMAGE_AVAILABLE:
             self.logger.error(
-                f"Mode inconnu : '{self.mode}'",
-                "Modes valides : 'hybrid' ou 'vision'"
+                "pdf2image non installé",
+                "pip install pdf2image\n"
+                "sudo apt install poppler-utils"
             )
             return self._empty_df()
 
+        # ── Convertir PDF → Images ────────────────────────────
+        self.logger.step("Conversion PDF → Images haute résolution")
+        try:
+            images = convert_from_bytes(
+                pdf_bytes,
+                dpi=250,
+                fmt="PNG",
+                thread_count=1,
+            )
+            self.logger.success(
+                f"{len(images)} image(s) générée(s)",
+                f"DPI=250 | Format=PNG"
+            )
+        except Exception as e:
+            self.logger.error(
+                "Échec conversion PDF → Images",
+                "Vérifiez poppler-utils :\n"
+                "  Linux : sudo apt install poppler-utils\n"
+                "  Mac   : brew install poppler",
+                exc=e
+            )
+            return self._empty_df()
+
+        total            = len(images)
+        all_transactions = []
+
+        self.logger.separator("APPELS API GEMINI VISION")
+
+        for idx, image in enumerate(images):
+            page_num = idx + 1
+            progress = 10 + int((page_num / total) * 75)
+            self._update_progress(
+                progress,
+                f"🤖 Gemini Vision — page {page_num}/{total}..."
+            )
+
+            self.logger.api(
+                f"Traitement page {page_num}/{total}",
+                f"Résolution : {image.width}x{image.height}px"
+            )
+
+            transactions = self._call_vision_single_page(
+                image, page_num, total
+            )
+
+            self.logger.data(
+                f"Résultat page {page_num}",
+                f"{len(transactions)} transaction(s) extraite(s)"
+            )
+
+            # Afficher les 3 premières pour vérification
+            if transactions:
+                for i, t in enumerate(transactions[:3]):
+                    self.logger.debug(
+                        f"  Transaction {i+1}",
+                        json.dumps(t, ensure_ascii=False)
+                    )
+
+            all_transactions.extend(transactions)
+
+            # Pause entre pages pour éviter le rate limiting
+            if page_num < total:
+                self.logger.debug(
+                    f"Pause 1.5s avant page {page_num+1}"
+                )
+                time.sleep(1.5)
+
+        # ── Résultat final ────────────────────────────────────
+        self.logger.separator("RÉSULTAT FINAL")
+        self.logger.data(
+            "Total transactions",
+            f"{len(all_transactions)}"
+        )
+
+        if not all_transactions:
+            self.logger.error(
+                "Aucune transaction extraite (mode Vision)",
+                "Causes possibles :\n"
+                "1. Gemini n'a pas retourné de JSON valide\n"
+                "2. Le format du relevé n'est pas reconnu\n"
+                "3. Les images sont trop floues\n"
+                "4. Erreur de parsing JSON\n"
+                "→ Consultez les logs détaillés ci-dessus"
+            )
+            return self._empty_df()
+
+        self._update_progress(90, "🔧 Construction du tableau...")
+        df = self._build_dataframe(all_transactions)
+        self.logger.success(
+            "Extraction Vision terminée",
+            f"{len(df)} lignes dans le DataFrame final"
+        )
+        return df
+
+    # ── Appel Gemini pour UNE page (Vision) ──────────────────
+
+    def _call_vision_single_page(
+        self,
+        image:    Image.Image,
+        page_num: int,
+        total:    int,
+    ) -> list:
+        """
+        Envoie une image à Gemini et retourne les transactions.
+        Gère les retries, le rate limiting et le debug.
+        """
+        # Optimiser l'image
+        optimized = self._optimize_image(image)
+        self.logger.debug(
+            f"Image optimisée p.{page_num}",
+            f"{optimized.width}x{optimized.height}px"
+        )
+
+        max_retries = 3
+        last_error  = None
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                self.logger.api(
+                    f"Envoi image à Gemini "
+                    f"(page {page_num}, tentative {attempt}/{max_retries})"
+                )
+
+                # ── Appel API ─────────────────────────────────
+                response = self.model.generate_content(
+                    contents=[self.PROMPT_VISION, optimized],
+                    request_options={"timeout": 120},
+                )
+
+                # ── Vérifier la réponse ───────────────────────
+                if not response:
+                    self.logger.warning(
+                        f"Réponse None de Gemini "
+                        f"(page {page_num})"
+                    )
+                    continue
+
+                # ── Extraire le texte ─────────────────────────
+                raw_text = None
+                try:
+                    raw_text = response.text
+                except Exception as e:
+                    self.logger.warning(
+                        f"Impossible de lire response.text",
+                        str(e)
+                    )
+                    # Essayer via candidates
+                    try:
+                        raw_text = (
+                            response.candidates[0]
+                            .content.parts[0].text
+                        )
+                    except Exception as e2:
+                        self.logger.error(
+                            "Impossible d'extraire le texte "
+                            "de la réponse Gemini",
+                            str(e2)
+                        )
+                        continue
+
+                if not raw_text:
+                    self.logger.warning(
+                        f"Texte vide dans la réponse Gemini "
+                        f"(page {page_num})"
+                    )
+
+                    # Log le finish_reason si disponible
+                    try:
+                        fr = (
+                            response.candidates[0]
+                            .finish_reason
+                        )
+                        self.logger.warning(
+                            f"Finish reason : {fr}"
+                        )
+                    except Exception:
+                        pass
+                    continue
+
+                self.logger.debug(
+                    f"Réponse brute Gemini (page {page_num})",
+                    f"Longueur : {len(raw_text)} chars\n"
+                    f"Aperçu : '{raw_text[:400]}'"
+                )
+
+                # ── Parser le JSON ────────────────────────────
+                transactions = self._parse_response(
+                    raw_text, f"page {page_num}"
+                )
+                return transactions
+
+            except Exception as e:
+                last_error = e
+                err_str    = str(e)
+                self.logger.warning(
+                    f"Erreur Gemini Vision "
+                    f"(page {page_num}, tentative {attempt})",
+                    err_str[:300]
+                )
+
+                # Rate limiting
+                if any(
+                    c in err_str
+                    for c in [
+                        "429", "quota",
+                        "RESOURCE_EXHAUSTED",
+                        "rate"
+                    ]
+                ):
+                    wait = attempt * 20
+                    self.logger.warning(
+                        f"Rate limit détecté → attente {wait}s"
+                    )
+                    self._update_progress(
+                        -1,
+                        f"⏳ Limite API — attente {wait}s..."
+                    )
+                    time.sleep(wait)
+                    continue
+
+                # Timeout
+                if "timeout" in err_str.lower():
+                    self.logger.warning(
+                        f"Timeout → retry dans 5s"
+                    )
+                    time.sleep(5)
+                    continue
+
+                if attempt == max_retries:
+                    self.logger.error(
+                        f"Échec définitif page {page_num}",
+                        exc=last_error
+                    )
+                time.sleep(2)
+
+        return []
+
+    def _optimize_image(
+        self, image: Image.Image
+    ) -> Image.Image:
+        """Optimise l'image pour Gemini Vision."""
+        # Convertir en RGB
+        if image.mode != "RGB":
+            self.logger.debug(
+                f"Conversion mode {image.mode} → RGB"
+            )
+            image = image.convert("RGB")
+
+        # Redimensionner si nécessaire
+        max_width = 2000
+        if image.width > max_width:
+            ratio  = max_width / image.width
+            new_h  = int(image.height * ratio)
+            image  = image.resize(
+                (max_width, new_h), Image.LANCZOS
+            )
+            self.logger.debug(
+                f"Image redimensionnée → {max_width}x{new_h}px"
+            )
+
+        return image
+
     # ══════════════════════════════════════════════════════════
-    # MODE 1 : HYBRIDE (pdfplumber + Gemini Text)
+    # MODE HYBRIDE
     # ══════════════════════════════════════════════════════════
 
-    def _extract_hybrid(self, pdf_bytes: bytes) -> pd.DataFrame:
-        """
-        Pipeline hybride :
-        PDF → pdfplumber → Texte brut → Gemini Text → DataFrame
-        """
+    def _extract_hybrid(
+        self, pdf_bytes: bytes
+    ) -> pd.DataFrame:
+        """Pipeline hybride : texte pdfplumber + Gemini Text."""
         self.logger.separator("MODE HYBRIDE")
         self._update_progress(3, "📄 Lecture du PDF...")
 
-        # ── Étape 1 : Extraction texte ────────────────────────
-        self.logger.step("Extraction du texte via pdfplumber")
+        # ── Extraire le texte ─────────────────────────────────
+        self.logger.step(
+            "Extraction texte via pdfplumber"
+        )
         try:
             pages = self._extract_text_from_pdf(pdf_bytes)
         except Exception as e:
             self.logger.error(
-                "Échec de l'extraction texte pdfplumber",
+                "Échec extraction texte pdfplumber",
                 exc=e
             )
             self.logger.warning(
-                "Basculement automatique vers le mode Vision"
+                "Basculement automatique vers mode Vision"
             )
             return self._extract_vision(pdf_bytes)
 
-        # ── Diagnostic texte extrait ──────────────────────────
-        self.logger.separator("DIAGNOSTIC TEXTE EXTRAIT")
+        # ── Diagnostic qualité texte ──────────────────────────
         total_pages = len(pages)
-
         if total_pages == 0:
             self.logger.error(
                 "Aucune page extraite par pdfplumber",
-                "Le PDF est peut-être vide, corrompu, "
-                "ou entièrement constitué d'images scannées."
-            )
-            self.logger.warning(
-                "Basculement automatique vers le mode Vision"
+                "PDF vide, corrompu ou 100% scanné"
             )
             return self._extract_vision(pdf_bytes)
 
-        # Analyser la qualité du texte extrait
-        total_chars  = sum(p["char_count"] for p in pages)
-        avg_chars    = total_chars / total_pages
-        empty_pages  = [
+        total_chars = sum(p["char_count"] for p in pages)
+        avg_chars   = total_chars / total_pages
+        empty_pages = [
             p for p in pages if p["char_count"] < 50
         ]
 
         self.logger.data(
-            "Pages extraites",
+            "Texte extrait",
             f"{total_pages} pages | "
-            f"{total_chars:,} caractères total | "
-            f"{avg_chars:.0f} chars/page en moyenne"
+            f"{total_chars:,} chars | "
+            f"{avg_chars:.0f} chars/page"
         )
 
         if empty_pages:
             self.logger.warning(
-                f"{len(empty_pages)} page(s) avec peu de texte "
-                f"(< 50 chars)",
-                f"Pages concernées : "
-                f"{[p['page_num'] for p in empty_pages]}"
+                f"{len(empty_pages)} page(s) avec peu de texte",
+                str([p["page_num"] for p in empty_pages])
             )
 
         if avg_chars < 100:
             self.logger.error(
-                "Texte insuffisant extrait par pdfplumber",
-                f"Moyenne : {avg_chars:.0f} chars/page\n"
-                "Cause probable : PDF scanné sans couche texte\n"
-                "Solution : Utiliser le mode Vision"
-            )
-            self.logger.warning(
-                "Basculement automatique vers le mode Vision"
+                "Texte insuffisant",
+                f"Moyenne {avg_chars:.0f} chars/page\n"
+                "→ PDF probablement scanné\n"
+                "→ Basculement vers mode Vision"
             )
             return self._extract_vision(pdf_bytes)
 
-        # Afficher un aperçu du texte de la première page
-        if pages:
-            preview = pages[0]["text"][:300].replace("\n", " | ")
-            self.logger.debug(
-                f"Aperçu texte page 1",
-                f"'{preview}...'"
-            )
-
         self.logger.success(
             "Texte extrait avec succès",
-            f"{total_pages} pages, "
-            f"{total_chars:,} caractères"
-        )
-        self._update_progress(
-            35,
-            f"✅ {total_pages} page(s) lues — "
-            f"envoi à Gemini..."
+            f"{total_pages} pages, {total_chars:,} chars"
         )
 
-        # ── Étape 2 : Gemini Text ─────────────────────────────
-        self.logger.separator("APPELS API GEMINI")
+        self._update_progress(
+            35,
+            f"✅ {total_pages} page(s) lues — envoi à Gemini..."
+        )
+
+        # ── Appels Gemini Text ────────────────────────────────
+        self.logger.separator("APPELS API GEMINI TEXT")
         all_transactions = []
 
         for page_data in pages:
             page_num   = page_data["page_num"]
             text       = page_data["text"]
             char_count = page_data["char_count"]
-            tokens_est = char_count // 4
 
             progress = 35 + int(
                 (page_num / total_pages) * 50
@@ -447,15 +650,9 @@ FORMAT DE RÉPONSE — JSON uniquement, sans markdown :
                 progress,
                 f"🤖 Gemini analyse page "
                 f"{page_num}/{total_pages} "
-                f"(~{tokens_est} tokens)..."
+                f"(~{char_count//4} tokens)..."
             )
 
-            self.logger.api(
-                f"Page {page_num}/{total_pages}",
-                f"{char_count} chars | ~{tokens_est} tokens"
-            )
-
-            # Vérifier que le texte est non-vide
             if not text or char_count < 30:
                 self.logger.warning(
                     f"Page {page_num} ignorée",
@@ -464,45 +661,31 @@ FORMAT DE RÉPONSE — JSON uniquement, sans markdown :
                 continue
 
             transactions = self._call_gemini_text(
-                text,
-                page_info=f"{page_num}/{total_pages}"
+                text, f"{page_num}/{total_pages}"
             )
-
             self.logger.data(
-                f"Page {page_num} → résultat",
-                f"{len(transactions)} transaction(s) extraite(s)"
+                f"Résultat page {page_num}",
+                f"{len(transactions)} transaction(s)"
             )
-
             all_transactions.extend(transactions)
 
             if page_num < total_pages:
                 time.sleep(0.5)
 
-        # ── Étape 3 : Résultat final ──────────────────────────
+        # ── Résultat ──────────────────────────────────────────
         self.logger.separator("RÉSULTAT FINAL")
-        self.logger.data(
-            "Total transactions extraites",
-            f"{len(all_transactions)} transaction(s)"
-        )
-
         if not all_transactions:
             self.logger.error(
                 "Aucune transaction extraite (mode Hybride)",
-                "Causes possibles :\n"
-                "1. Le texte extrait n'est pas structuré en tableau\n"
-                "2. Gemini n'a pas reconnu le format\n"
-                "3. Le PDF ne contient pas de texte lisible\n"
                 "→ Essayez le mode Vision"
             )
             return self._empty_df()
 
-        self._update_progress(
-            88, "🔧 Construction du tableau..."
-        )
+        self._update_progress(88, "🔧 Construction tableau...")
         df = self._build_dataframe(all_transactions)
         self.logger.success(
-            "Extraction hybride terminée",
-            f"{len(df)} lignes dans le DataFrame final"
+            "Extraction Hybride terminée",
+            f"{len(df)} lignes"
         )
         return df
 
@@ -511,14 +694,13 @@ FORMAT DE RÉPONSE — JSON uniquement, sans markdown :
     def _extract_text_from_pdf(
         self, pdf_bytes: bytes
     ) -> list:
-        """Extrait le texte de chaque page via pdfplumber."""
+        """Extrait le texte de chaque page."""
         pages = []
 
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
             total = len(pdf.pages)
             self.logger.info(
-                f"PDF ouvert",
-                f"{total} pages détectées"
+                f"PDF ouvert : {total} pages"
             )
 
             for i, page in enumerate(pdf.pages):
@@ -530,61 +712,35 @@ FORMAT DE RÉPONSE — JSON uniquement, sans markdown :
                     f"{page_num}/{total}..."
                 )
 
-                # Méthode 1 : extract_text avec layout
+                # Méthode 1 : extract_text
                 raw_text = None
                 try:
                     raw_text = page.extract_text(
                         x_tolerance=3,
                         y_tolerance=3,
                         layout=True,
-                        x_density=7.25,
-                        y_density=13,
-                    )
-                    self.logger.debug(
-                        f"Page {page_num} — extract_text(layout)",
-                        f"{len(raw_text or '')} chars extraits"
                     )
                 except Exception as e:
                     self.logger.warning(
-                        f"Page {page_num} — extract_text échoué",
+                        f"extract_text échoué p.{page_num}",
                         str(e)
                     )
 
-                # Méthode 2 : par mots si résultat insuffisant
+                # Méthode 2 : extract_words
                 if not raw_text or len(raw_text.strip()) < 50:
-                    self.logger.debug(
-                        f"Page {page_num} — "
-                        f"fallback extract_words",
-                        f"Texte initial : "
-                        f"'{(raw_text or '').strip()[:80]}'"
-                    )
                     raw_text = self._words_to_text(page)
-                    self.logger.debug(
-                        f"Page {page_num} — extract_words",
-                        f"{len(raw_text)} chars extraits"
-                    )
 
-                # Méthode 3 : extract_table si tout échoue
+                # Méthode 3 : extract_tables
                 if not raw_text or len(raw_text.strip()) < 50:
-                    self.logger.debug(
-                        f"Page {page_num} — "
-                        f"fallback extract_tables"
-                    )
                     raw_text = self._tables_to_text(page)
-                    self.logger.debug(
-                        f"Page {page_num} — extract_tables",
-                        f"{len(raw_text)} chars extraits"
-                    )
 
-                # Nettoyer et stocker
-                cleaned = self._clean_text(raw_text or "")
+                cleaned    = self._clean_text(raw_text or "")
                 char_count = len(cleaned)
 
                 self.logger.debug(
-                    f"Page {page_num} — après nettoyage",
+                    f"Page {page_num}",
                     f"{char_count} chars | "
-                    f"Aperçu : "
-                    f"'{cleaned[:150].replace(chr(10), ' | ')}'"
+                    f"'{cleaned[:120].replace(chr(10), ' | ')}'"
                 )
 
                 pages.append({
@@ -597,38 +753,32 @@ FORMAT DE RÉPONSE — JSON uniquement, sans markdown :
         return pages
 
     def _words_to_text(self, page) -> str:
-        """Reconstruit le texte depuis les mots par position Y."""
+        """Reconstruit le texte depuis les mots."""
         try:
             words = page.extract_words(
-                x_tolerance=4,
-                y_tolerance=4,
-                keep_blank_chars=False,
+                x_tolerance=4, y_tolerance=4
             )
             if not words:
                 return ""
-
             lines = {}
             for w in words:
                 y = round(float(w["top"]) / 4) * 4
                 lines.setdefault(y, []).append(w)
-
             result = []
-            for y in sorted(lines.keys()):
-                line_words = sorted(
-                    lines[y], key=lambda w: w["x0"]
-                )
+            for y in sorted(lines):
+                wds = sorted(lines[y], key=lambda w: w["x0"])
                 result.append(
-                    " ".join(w["text"] for w in line_words)
+                    " ".join(w["text"] for w in wds)
                 )
             return "\n".join(result)
         except Exception as e:
             self.logger.warning(
-                "Erreur _words_to_text", str(e)
+                "_words_to_text échoué", str(e)
             )
             return ""
 
     def _tables_to_text(self, page) -> str:
-        """Convertit les tableaux pdfplumber en texte."""
+        """Convertit les tableaux en texte."""
         try:
             tables = page.extract_tables()
             if not tables:
@@ -647,7 +797,7 @@ FORMAT DE RÉPONSE — JSON uniquement, sans markdown :
             return "\n".join(lines)
         except Exception as e:
             self.logger.warning(
-                "Erreur _tables_to_text", str(e)
+                "_tables_to_text échoué", str(e)
             )
             return ""
 
@@ -666,337 +816,99 @@ FORMAT DE RÉPONSE — JSON uniquement, sans markdown :
             r"br\.net ver",
             r"^\s*(ibantio|bdjoko|gtakeu|ideynou|mmodjo)\s*$",
         ]
-        lines      = text.split("\n")
-        result     = []
-        prev_empty = False
-
+        lines, result, prev_empty = text.split("\n"), [], False
         for line in lines:
-            stripped = line.strip()
-            lower    = stripped.lower()
-
-            # Ignorer les lignes de métadonnées
-            if any(re.search(p, lower) for p in skip):
+            s = line.strip()
+            if any(re.search(p, s.lower()) for p in skip):
                 continue
-
-            # Limiter les lignes vides consécutives
-            if not stripped:
+            if not s:
                 if not prev_empty:
                     result.append("")
                 prev_empty = True
             else:
-                result.append(stripped)
+                result.append(s)
                 prev_empty = False
-
         return "\n".join(result).strip()
 
     # ══════════════════════════════════════════════════════════
-    # MODE 2 : VISION (PDF → Images → Gemini Vision)
-    # ══════════════════════════════════════════════════════════
-
-    def _extract_vision(self, pdf_bytes: bytes) -> pd.DataFrame:
-        """
-        Pipeline vision :
-        PDF → Images HD → Gemini Vision → DataFrame
-        """
-        self.logger.separator("MODE VISION")
-        self._update_progress(3, "🖼️ Conversion PDF en images...")
-
-        # ── Vérifier pdf2image ────────────────────────────────
-        if not PDF2IMAGE_AVAILABLE:
-            self.logger.error(
-                "pdf2image non installé",
-                "Installez : pip install pdf2image\n"
-                "Et sur le système : sudo apt install "
-                "poppler-utils"
-            )
-            return self._empty_df()
-
-        # ── Convertir PDF → Images ────────────────────────────
-        self.logger.step("Conversion PDF → Images")
-        try:
-            images = convert_from_bytes(
-                pdf_bytes,
-                dpi=200,
-                fmt="PNG",
-                thread_count=2,
-            )
-            self.logger.success(
-                f"{len(images)} image(s) générée(s)",
-                "DPI : 200 | Format : PNG"
-            )
-        except Exception as e:
-            self.logger.error(
-                "Échec conversion PDF → Images",
-                "Vérifiez que poppler-utils est installé :\n"
-                "  Linux : sudo apt install poppler-utils\n"
-                "  Mac   : brew install poppler\n"
-                "  Windows : télécharger poppler binaries",
-                exc=e
-            )
-            return self._empty_df()
-
-        total_pages      = len(images)
-        all_transactions = []
-
-        self.logger.separator("APPELS API GEMINI VISION")
-
-        for page_num, image in enumerate(images, 1):
-            progress = 10 + int(
-                (page_num / total_pages) * 75
-            )
-            self._update_progress(
-                progress,
-                f"🤖 Gemini Vision — page "
-                f"{page_num}/{total_pages}..."
-            )
-
-            self.logger.api(
-                f"Page {page_num}/{total_pages}",
-                f"Taille image : "
-                f"{image.width}x{image.height}px"
-            )
-
-            transactions = self._call_gemini_vision(
-                image, page_num, total_pages
-            )
-
-            self.logger.data(
-                f"Page {page_num} → résultat",
-                f"{len(transactions)} transaction(s)"
-            )
-            all_transactions.extend(transactions)
-
-            if page_num < total_pages:
-                time.sleep(1)
-
-        # ── Résultat final ────────────────────────────────────
-        self.logger.separator("RÉSULTAT FINAL")
-        self.logger.data(
-            "Total transactions",
-            f"{len(all_transactions)}"
-        )
-
-        if not all_transactions:
-            self.logger.error(
-                "Aucune transaction extraite (mode Vision)",
-                "Causes possibles :\n"
-                "1. Image trop floue / résolution insuffisante\n"
-                "2. Tableau non reconnu par Gemini\n"
-                "3. Format de relevé non standard\n"
-                "4. Erreur API Gemini"
-            )
-            return self._empty_df()
-
-        self._update_progress(90, "🔧 Construction tableau...")
-        df = self._build_dataframe(all_transactions)
-        self.logger.success(
-            "Extraction vision terminée",
-            f"{len(df)} lignes dans le DataFrame final"
-        )
-        return df
-
-    # ── Appel Gemini Vision ───────────────────────────────────
-
-    def _call_gemini_vision(
-        self,
-        image:      Image.Image,
-        page_num:   int,
-        total:      int,
-    ) -> list:
-        """
-        Envoie une image à Gemini Vision et retourne
-        les transactions extraites.
-        """
-        # Optimiser l'image
-        optimized = self._optimize_image(image)
-
-        self.logger.debug(
-            f"Image optimisée",
-            f"{optimized.width}x{optimized.height}px"
-        )
-
-        max_retries = 3
-        for attempt in range(1, max_retries + 1):
-            try:
-                self.logger.api(
-                    f"Envoi image p.{page_num} "
-                    f"(tentative {attempt}/{max_retries})"
-                )
-
-                response = self.model.generate_content(
-                    [self.PROMPT_VISION, optimized],
-                    request_options={"timeout": 60},
-                )
-
-                raw = response.text
-                self.logger.debug(
-                    f"Réponse Gemini Vision p.{page_num}",
-                    f"Longueur : {len(raw)} chars\n"
-                    f"Aperçu : '{raw[:200]}'"
-                )
-
-                transactions = self._parse_response(
-                    raw, page_num
-                )
-                return transactions
-
-            except Exception as e:
-                err = str(e)
-                self.logger.warning(
-                    f"Erreur page {page_num} "
-                    f"(tentative {attempt})",
-                    err[:200]
-                )
-
-                # Rate limit → attendre
-                if any(
-                    c in err
-                    for c in ["429", "quota",
-                               "RESOURCE_EXHAUSTED"]
-                ):
-                    wait = attempt * 15
-                    self.logger.warning(
-                        f"Rate limit — attente {wait}s"
-                    )
-                    self._update_progress(
-                        -1,
-                        f"⏳ Limite API — attente {wait}s..."
-                    )
-                    time.sleep(wait)
-                    continue
-
-                if attempt == max_retries:
-                    self.logger.error(
-                        f"Échec définitif page {page_num}",
-                        exc=e
-                    )
-                    return []
-                time.sleep(3)
-
-        return []
-
-    def _optimize_image(
-        self, image: Image.Image
-    ) -> Image.Image:
-        """Optimise l'image pour Gemini (taille + mode)."""
-        if image.mode != "RGB":
-            image = image.convert("RGB")
-
-        max_w = 1800
-        if image.width > max_w:
-            ratio  = max_w / image.width
-            new_h  = int(image.height * ratio)
-            image  = image.resize(
-                (max_w, new_h), Image.LANCZOS
-            )
-        return image
-
-    # ══════════════════════════════════════════════════════════
-    # APPEL GEMINI TEXT (mode Hybride)
+    # APPEL GEMINI TEXT (Hybride)
     # ══════════════════════════════════════════════════════════
 
     def _call_gemini_text(
         self, text: str, page_info: str = ""
     ) -> list:
-        """
-        Envoie du texte brut à Gemini et retourne
-        les transactions extraites.
-        Gère le cache, les retries et le rate limiting.
-        """
-        # Cache
+        """Envoie du texte à Gemini et retourne les transactions."""
         cache_key = hashlib.md5(text.encode()).hexdigest()
         if cache_key in self._cache:
-            self.logger.debug(
-                f"Cache hit pour page {page_info}"
-            )
+            self.logger.debug(f"Cache hit — page {page_info}")
             return self._cache[cache_key]
 
-        # Chunking si texte trop long
         if len(text) > 8000:
-            self.logger.warning(
-                f"Texte trop long ({len(text)} chars) "
-                f"— découpage en chunks",
-                f"Page : {page_info}"
-            )
             return self._call_gemini_text_chunked(
                 text, page_info
             )
 
         user_prompt = (
-            f"Voici le texte brut de la page {page_info} "
-            f"du relevé bancaire :\n\n"
+            f"Voici le texte de la page {page_info} :\n\n"
             f"---\n{text}\n---\n\n"
-            f"Extrais toutes les transactions "
-            f"et retourne uniquement le JSON."
-        )
-
-        self.logger.token(
-            f"Prompt envoyé",
-            f"System : {len(self.PROMPT_TEXT)} chars | "
-            f"User : {len(user_prompt)} chars | "
-            f"Total estimé : ~{(len(self.PROMPT_TEXT) + len(user_prompt))//4} tokens"
+            f"Retourne uniquement le JSON."
         )
 
         max_retries = 3
         for attempt in range(1, max_retries + 1):
             try:
                 self.logger.api(
-                    f"Appel Gemini Text — page {page_info} "
+                    f"Appel Gemini Text page {page_info} "
                     f"(tentative {attempt}/{max_retries})"
                 )
-
                 response = self.model.generate_content(
-                    [self.PROMPT_TEXT, user_prompt],
+                    contents=[self.PROMPT_TEXT, user_prompt],
                     request_options={"timeout": 30},
                 )
 
-                raw = response.text
+                raw = None
+                try:
+                    raw = response.text
+                except Exception:
+                    try:
+                        raw = (
+                            response.candidates[0]
+                            .content.parts[0].text
+                        )
+                    except Exception:
+                        pass
+
+                if not raw:
+                    self.logger.warning(
+                        f"Réponse vide (text, page {page_info})"
+                    )
+                    continue
+
                 self.logger.debug(
-                    f"Réponse brute Gemini",
-                    f"Longueur : {len(raw)} chars\n"
-                    f"Début : '{raw[:300]}'"
+                    f"Réponse brute (page {page_info})",
+                    f"'{raw[:300]}'"
                 )
 
                 transactions = self._parse_response(
                     raw, page_info
                 )
-
-                # Stocker en cache
                 self._cache[cache_key] = transactions
                 return transactions
 
             except Exception as e:
                 err = str(e)
                 self.logger.warning(
-                    f"Erreur Gemini Text — page {page_info} "
+                    f"Erreur Gemini Text page {page_info} "
                     f"(tentative {attempt})",
-                    err[:300]
+                    err[:200]
                 )
-
                 if any(
                     c in err
-                    for c in ["429", "quota",
-                               "RESOURCE_EXHAUSTED"]
+                    for c in ["429", "quota", "RESOURCE_EXHAUSTED"]
                 ):
                     wait = attempt * 15
-                    self.logger.warning(
-                        f"Rate limit — attente {wait}s"
-                    )
-                    self._update_progress(
-                        -1,
-                        f"⏳ Limite API — attente {wait}s..."
-                    )
                     time.sleep(wait)
                     continue
-
-                if "context" in err.lower() or "413" in err:
-                    self.logger.warning(
-                        "Contexte trop long — chunking"
-                    )
-                    return self._call_gemini_text_chunked(
-                        text, page_info
-                    )
-
                 if attempt == max_retries:
                     self.logger.error(
                         f"Échec définitif page {page_info}",
@@ -1010,193 +922,349 @@ FORMAT DE RÉPONSE — JSON uniquement, sans markdown :
     def _call_gemini_text_chunked(
         self, text: str, page_info: str
     ) -> list:
-        """Découpe le texte en chunks et traite chacun."""
-        chunks       = self._split_chunks(text, max_chars=5000)
-        all_trans    = []
-
+        """Traite un texte long par chunks."""
+        chunks = self._split_chunks(text)
+        result = []
         self.logger.info(
-            f"Chunking : {len(chunks)} chunk(s) "
+            f"Chunking : {len(chunks)} chunks "
             f"pour page {page_info}"
         )
-
         for i, chunk in enumerate(chunks, 1):
-            self.logger.debug(
-                f"Chunk {i}/{len(chunks)}",
-                f"{len(chunk)} chars"
-            )
             trans = self._call_gemini_text(
-                chunk,
-                page_info=f"{page_info} chunk {i}/{len(chunks)}"
+                chunk, f"{page_info} chunk {i}/{len(chunks)}"
             )
-            all_trans.extend(trans)
+            result.extend(trans)
             if i < len(chunks):
                 time.sleep(0.5)
-
-        return all_trans
+        return result
 
     def _split_chunks(
         self, text: str, max_chars: int = 5000
     ) -> list:
-        """Découpe intelligemment sur les lignes vides."""
+        """Découpe le texte en chunks sur les lignes vides."""
         if len(text) <= max_chars:
             return [text]
-
-        chunks  = []
-        current = []
-        curr_l  = 0
-
+        chunks, current, curr_l = [], [], 0
         for line in text.split("\n"):
             ll = len(line) + 1
             if curr_l + ll > max_chars and current:
                 chunks.append("\n".join(current))
-                current = [line]
-                curr_l  = ll
+                current, curr_l = [line], ll
             else:
                 current.append(line)
                 curr_l += ll
-
         if current:
             chunks.append("\n".join(current))
-
         return chunks
 
     # ══════════════════════════════════════════════════════════
-    # PARSING DE LA RÉPONSE GEMINI
+    # PARSING JSON — Méthode centrale et robuste
     # ══════════════════════════════════════════════════════════
 
     def _parse_response(
-        self, response_text: str, page_info: str = ""
+        self, raw: str, page_info: str = ""
     ) -> list:
         """
-        Parse la réponse JSON de Gemini.
-        Robuste et détaillé en cas d'erreur.
+        Parse la réponse Gemini de manière robuste.
+        Gère tous les cas : JSON propre, JSON dans du texte,
+        JSON malformé, réponse en langage naturel.
         """
-        if not response_text:
+        if not raw or not raw.strip():
             self.logger.error(
-                f"Réponse vide de Gemini — page {page_info}"
+                f"Réponse vide — page {page_info}"
             )
             return []
 
-        text = response_text.strip()
+        text = raw.strip()
+        self.logger.debug(
+            f"Parsing réponse (page {page_info})",
+            f"Longueur totale : {len(text)} chars\n"
+            f"Début : '{text[:200]}'\n"
+            f"Fin   : '{text[-100:]}'"
+        )
 
-        # Nettoyer les balises markdown
-        text = re.sub(r"```json\s*", "", text)
+        # ── Étape 1 : Nettoyer les balises markdown ───────────
+        text = re.sub(r"```json\s*", "", text, flags=re.IGNORECASE)
         text = re.sub(r"```\s*",     "", text)
         text = text.strip()
 
-        self.logger.debug(
-            f"Texte après nettoyage markdown",
-            f"Longueur : {len(text)} chars\n"
-            f"Début : '{text[:200]}'"
-        )
+        # ── Étape 2 : Essai de parse direct ──────────────────
+        if text.startswith("{"):
+            result = self._try_parse_json(text, page_info)
+            if result is not None:
+                return result
 
-        # Extraire le JSON
-        json_match = re.search(r"\{.*\}", text, re.DOTALL)
-        if not json_match:
-            self.logger.error(
-                f"Pas de JSON valide dans la réponse "
-                f"— page {page_info}",
-                f"Contenu reçu :\n'{text[:500]}'"
+        # ── Étape 3 : Extraire le JSON avec regex ─────────────
+        # Chercher {"transactions": [...]}
+        pattern = r'\{[^{}]*"transactions"\s*:\s*\[.*?\]\s*\}'
+        match   = re.search(pattern, text, re.DOTALL)
+        if match:
+            self.logger.debug(
+                "JSON trouvé via regex (pattern transactions)"
             )
-            return []
+            result = self._try_parse_json(
+                match.group(0), page_info
+            )
+            if result is not None:
+                return result
 
-        json_str = json_match.group(0)
-        self.logger.debug(
-            "JSON extrait",
-            f"Longueur : {len(json_str)} chars\n"
-            f"Début : '{json_str[:200]}'"
+        # ── Étape 4 : Extraire n'importe quel objet JSON ──────
+        # (le plus grand bloc {} trouvé)
+        all_matches = list(
+            re.finditer(r"\{", text)
         )
+        best_json   = None
+        best_count  = 0
 
-        # Parser le JSON
+        for m in all_matches:
+            start   = m.start()
+            sub     = text[start:]
+            # Trouver la fermeture correspondante
+            depth   = 0
+            end_pos = None
+            for i, ch in enumerate(sub):
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        end_pos = i + 1
+                        break
+            if end_pos:
+                candidate = sub[:end_pos]
+                if len(candidate) > best_count:
+                    best_count = len(candidate)
+                    best_json  = candidate
+
+        if best_json:
+            self.logger.debug(
+                "JSON extrait par analyse des accolades",
+                f"Longueur : {len(best_json)} chars"
+            )
+            result = self._try_parse_json(
+                best_json, page_info
+            )
+            if result is not None:
+                return result
+
+        # ── Étape 5 : Réparer et réessayer ────────────────────
+        if best_json:
+            repaired = self._repair_json(best_json)
+            self.logger.debug(
+                "Tentative réparation JSON",
+                f"'{repaired[:200]}'"
+            )
+            result = self._try_parse_json(
+                repaired, page_info, is_repair=True
+            )
+            if result is not None:
+                return result
+
+        # ── Étape 6 : Parser ligne par ligne ──────────────────
+        # En dernier recours : essayer de construire les
+        # transactions depuis le texte brut
+        self.logger.warning(
+            f"JSON invalide — tentative parsing ligne par ligne",
+            f"Contenu complet :\n'{text[:600]}'"
+        )
+        transactions = self._parse_fallback(text)
+        if transactions:
+            self.logger.warning(
+                f"Parsing fallback : {len(transactions)} "
+                f"transactions récupérées"
+            )
+            return transactions
+
+        self.logger.error(
+            f"Impossible de parser la réponse "
+            f"(page {page_info})",
+            f"Contenu reçu :\n'{text[:500]}'"
+        )
+        return []
+
+    def _try_parse_json(
+        self,
+        json_str:  str,
+        page_info: str  = "",
+        is_repair: bool = False,
+    ):
+        """
+        Tente de parser un JSON.
+        Retourne la liste de transactions ou None si échec.
+        """
         try:
             data = json.loads(json_str)
         except json.JSONDecodeError as e:
-            self.logger.warning(
-                f"JSON malformé — tentative de réparation",
-                f"Erreur : {e}"
-            )
-            json_str = self._repair_json(json_str)
-            try:
-                data = json.loads(json_str)
-                self.logger.success("JSON réparé avec succès")
-            except Exception as e2:
-                self.logger.error(
-                    f"JSON irréparable — page {page_info}",
-                    f"Erreur : {e2}\n"
-                    f"JSON brut : '{json_str[:300]}'",
-                    exc=e2
+            if not is_repair:
+                self.logger.debug(
+                    f"JSON parse error",
+                    f"Erreur : {e}\n"
+                    f"Position : char {e.pos}\n"
+                    f"Extrait : '{json_str[max(0,e.pos-30):e.pos+30]}'"
                 )
-                return []
+            return None
 
-        transactions = data.get("transactions", [])
+        # Vérifier la structure
+        if not isinstance(data, dict):
+            self.logger.warning(
+                f"JSON n'est pas un objet dict",
+                f"Type : {type(data)}"
+            )
+            return None
+
+        transactions = data.get("transactions")
+
+        if transactions is None:
+            # Peut-être que la clé est différente
+            # Chercher une liste dans les valeurs
+            for key, val in data.items():
+                if isinstance(val, list):
+                    self.logger.debug(
+                        f"Clé 'transactions' non trouvée, "
+                        f"utilisation de '{key}'"
+                    )
+                    transactions = val
+                    break
+
+        if transactions is None:
+            self.logger.warning(
+                "Clé 'transactions' introuvable dans le JSON",
+                f"Clés disponibles : {list(data.keys())}"
+            )
+            return None
 
         if not isinstance(transactions, list):
-            self.logger.error(
-                "La clé 'transactions' n'est pas une liste",
-                f"Type reçu : {type(transactions)}\n"
-                f"Valeur : {str(transactions)[:200]}"
+            self.logger.warning(
+                f"'transactions' n'est pas une liste",
+                f"Type : {type(transactions)}"
+            )
+            return None
+
+        if len(transactions) == 0:
+            self.logger.info(
+                f"JSON valide mais 0 transaction "
+                f"(page {page_info})"
             )
             return []
 
-        self.logger.debug(
-            f"Transactions brutes parsées",
-            f"{len(transactions)} éléments"
+        self.logger.success(
+            f"JSON parsé avec succès",
+            f"{len(transactions)} transaction(s) brutes"
         )
 
-        # Normaliser chaque transaction
-        validated  = []
-        skipped    = 0
+        # Normaliser
+        validated = []
         for i, t in enumerate(transactions):
             norm = self._normalize(t)
             if norm:
                 validated.append(norm)
             else:
-                skipped += 1
                 self.logger.debug(
-                    f"Transaction {i+1} ignorée",
-                    f"Données : {str(t)[:150]}"
+                    f"Transaction {i+1} invalide/ignorée",
+                    f"{str(t)[:150]}"
                 )
 
-        if skipped > 0:
-            self.logger.warning(
-                f"{skipped} transaction(s) ignorée(s) "
-                f"(données invalides)"
-            )
-
-        self.logger.success(
-            f"Parsing terminé — page {page_info}",
-            f"{len(validated)} transactions valides "
-            f"/ {len(transactions)} brutes"
+        self.logger.data(
+            "Transactions validées",
+            f"{len(validated)} / {len(transactions)}"
         )
         return validated
 
+    def _parse_fallback(self, text: str) -> list:
+        """
+        Dernier recours : essaye de construire des transactions
+        depuis un texte non-JSON (réponse en langage naturel).
+        """
+        transactions = []
+        lines        = text.split("\n")
+
+        date_pattern = re.compile(
+            r"(\d{2}/\d{2}/\d{4})"
+        )
+        amount_pattern = re.compile(
+            r"\b(\d{3,}(?:\s\d{3})*)\b"
+        )
+
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+
+            date_match = date_pattern.search(line)
+            if not date_match:
+                continue
+
+            amounts = [
+                int(m.replace(" ", ""))
+                for m in amount_pattern.findall(line)
+                if int(m.replace(" ", "")) > 100
+            ]
+
+            if not amounts:
+                continue
+
+            # Extraire le libellé (texte entre date et montants)
+            libelle = re.sub(
+                r"\d{2}/\d{2}/\d{4}|\d{3,}(?:\s\d{3})*|\d+/",
+                " ", line
+            ).strip()
+            libelle = re.sub(r"\s+", " ", libelle).strip()
+
+            if not libelle:
+                continue
+
+            t = {
+                "date":        date_match.group(1),
+                "reference":   "",
+                "libelle":     libelle,
+                "date_valeur": "",
+                "debit":       None,
+                "credit":      float(amounts[-2])
+                               if len(amounts) >= 2
+                               else None,
+                "solde":       float(amounts[-1])
+                               if amounts else None,
+            }
+            transactions.append(t)
+
+        return transactions
+
     def _repair_json(self, s: str) -> str:
-        """Répare les JSON légèrement malformés."""
+        """Tente de réparer un JSON malformé."""
         s = re.sub(r",\s*}", "}", s)
         s = re.sub(r",\s*]", "]", s)
         s = s.replace("None",  "null")
         s = s.replace("True",  "true")
         s = s.replace("False", "false")
-        s = s.replace("'",     '"')
+        # Remplacer les guillemets simples si pas de guillemets
+        # doubles
+        if '"' not in s and "'" in s:
+            s = s.replace("'", '"')
         return s
 
+    # ══════════════════════════════════════════════════════════
+    # NORMALISATION
+    # ══════════════════════════════════════════════════════════
+
     def _normalize(self, t: dict) -> dict:
-        """Normalise et valide une transaction."""
+        """Valide et normalise une transaction."""
         if not isinstance(t, dict):
             return None
 
         libelle = str(t.get("libelle", "") or "").strip()
-        if not libelle:
+        if not libelle or libelle.lower() in (
+            "none", "null", ""
+        ):
             return None
 
         return {
-            "date":        self._fmt_date(t.get("date", "")),
+            "date":        self._fmt_date(t.get("date")),
             "reference":   str(
                 t.get("reference", "") or ""
             ).strip(),
             "libelle":     libelle,
             "date_valeur": self._fmt_date(
-                t.get("date_valeur", "")
+                t.get("date_valeur")
             ),
             "debit":       self._fmt_amount(t.get("debit")),
             "credit":      self._fmt_amount(t.get("credit")),
@@ -1212,10 +1280,14 @@ FORMAT DE RÉPONSE — JSON uniquement, sans markdown :
         return s
 
     def _fmt_amount(self, val) -> float:
-        if val is None or str(val).lower() in ("null", ""):
+        if val is None or str(val).lower() in ("null", "", "none"):
             return None
         try:
-            s = re.sub(r"[^\d.]", "", str(val).replace(" ", ""))
+            s = re.sub(
+                r"[^\d.]",
+                "",
+                str(val).replace(" ", "")
+            )
             return float(s) if s else None
         except (ValueError, TypeError):
             return None
@@ -1227,7 +1299,10 @@ FORMAT DE RÉPONSE — JSON uniquement, sans markdown :
     def _build_dataframe(
         self, transactions: list
     ) -> pd.DataFrame:
-        """Construit le DataFrame final."""
+        """Construit et déduplique le DataFrame final."""
+        if not transactions:
+            return self._empty_df()
+
         rows = [{
             "Date":        t.get("date", ""),
             "Référence":   t.get("reference", ""),
@@ -1240,23 +1315,31 @@ FORMAT DE RÉPONSE — JSON uniquement, sans markdown :
 
         df = pd.DataFrame(rows)
 
-        # Supprimer les vrais doublons
+        # Séparer soldes et transactions normales
         mask_solde = df["Libellé"].str.contains(
             r"solde\s+d|solde\s+de\s+cl",
             case=False, na=False, regex=True,
         )
-        df_normal = df[~mask_solde].drop_duplicates(
+        df_soldes  = df[mask_solde]
+        df_normal  = df[~mask_solde].drop_duplicates(
             subset=["Date", "Référence", "Libellé"],
             keep="first",
         )
-        df_soldes = df[mask_solde]
 
-        return pd.concat(
+        df_final = pd.concat(
             [df_soldes, df_normal], ignore_index=True
         )
 
+        self.logger.data(
+            "DataFrame construit",
+            f"{len(df_final)} lignes "
+            f"({len(df_soldes)} soldes + "
+            f"{len(df_normal)} transactions)"
+        )
+        return df_final
+
     # ══════════════════════════════════════════════════════════
-    # MÉTHODES UTILITAIRES PUBLIQUES
+    # MÉTHODES PUBLIQUES
     # ══════════════════════════════════════════════════════════
 
     def _empty_df(self) -> pd.DataFrame:
@@ -1266,24 +1349,16 @@ FORMAT DE RÉPONSE — JSON uniquement, sans markdown :
         ])
 
     def get_debug_logs(self) -> str:
-        """Retourne tous les logs de débogage en texte."""
         return self.logger.get_logs_as_text()
 
     def get_debug_summary(self) -> dict:
-        """Retourne un résumé du débogage."""
         return self.logger.get_summary()
 
     def get_debug_entries(self) -> list:
-        """Retourne les entrées de log brutes."""
         return self.logger.logs
-
-    # ── Méthode publique pour estimation tokens ───────────────
 
     def _extract_text_from_pdf_public(
         self, pdf_bytes: bytes
     ) -> list:
-        """
-        Alias public pour l'estimation de tokens
-        (appelé depuis app.py avant confirmation).
-        """
+        """Alias public pour l'estimation de tokens."""
         return self._extract_text_from_pdf(pdf_bytes)
