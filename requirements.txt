@@ -8,3 +8,4 @@ pdf2image
 opencv-python-headless
 python-dotenv
 numpy
+google-generativeai
