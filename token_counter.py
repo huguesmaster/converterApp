@@ -47,7 +47,7 @@ class TokenCounter:
         input_tokens:  int,
         output_tokens: int,
         pages:         int,
-        file_name:     str = ""
+        file_name:     str = "",
         self._init_session()
     ):
         """
