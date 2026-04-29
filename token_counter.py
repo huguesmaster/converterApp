@@ -48,7 +48,7 @@ class TokenCounter:
         output_tokens: int,
         pages:         int,
         file_name:     str = "",
-        self._init_session()
+        self._init_session(),
     ):
         """
         Enregistre les tokens utilisés pour une extraction.
