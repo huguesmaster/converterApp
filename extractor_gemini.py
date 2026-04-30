@@ -153,6 +153,23 @@ class GeminiExtractor:
     # ====================== PROMPT DYNAMIQUE PAR BANQUE ======================
     def _build_prompt(self, is_vision: bool = True) -> str:
         c = self.config
+        
+        json_example = '''
+{
+  "transactions": [
+    {
+      "date": "JJ/MM/AAAA",
+      "reference": "string ou vide",
+      "libelle": "description complète fusionnée",
+      "date_valeur": "JJ/MM/AAAA",
+      "debit": null ou nombre,
+      "credit": null ou nombre,
+      "solde": nombre
+    }
+  ]
+}
+'''
+
         prompt = f"""Tu es un expert comptable spécialisé dans les relevés bancaires camerounais de **{c.nom}**.
 
 **Colonnes attendues (gauche à droite)** :
@@ -168,23 +185,16 @@ class GeminiExtractor:
 {c.specific_instructions}
 
 **Règles OBLIGATOIRES** :
-1. **Fusion des libellés** : Combine les lignes consécutives qui n'ont ni date ni montant dans le champ "libelle".
-2. Respecte **strictement** les colonnes Débit et Crédit. Ne jamais les inverser.
-3. Montants : supprime tous les espaces et convertis en nombre (ex: "24 553 342" → 24553342). Utilise `null` pour les cellules vides.
+1. Fusionne les libellés sur plusieurs lignes consécutives qui n'ont ni date ni montant.
+2. Respecte strictement les colonnes Débit et Crédit — ne jamais les inverser.
+3. Montants : supprime tous les espaces → "24 553 342" devient 24553342. Utilise `null` pour les cellules vides.
 4. Inclu les lignes de **Solde d'ouverture** et **Solde de clôture**.
 5. Retourne **uniquement** le JSON suivant, sans aucun texte supplémentaire :
 
-```json
-{{
-  "transactions": [
-    {{
-      "date": "JJ/MM/AAAA",
-      "reference": "string ou vide",
-      "libelle": "description complète fusionnée",
-      "date_valeur": "JJ/MM/AAAA",
-      "debit": null ou nombre,
-      "credit": null ou nombre,
-      "solde": nombre
-    }}
-  ]
-}}
+{json_example}
+"""
+
+        if not is_vision:
+            prompt += "\n\nLe texte est extrait via pdfplumber et peut contenir du bruit (en-têtes, pieds de page). Ignore tout ce qui n'appartient pas au tableau des transactions."
+
+        return prompt
