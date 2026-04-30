@@ -1,6 +1,6 @@
 """
-cleaner.py - Version 4.4
-Approche prudente : minimiser la perte de lignes et maximiser la fidélité
+cleaner.py - Version 4.5
+Approche ultra-conservatrice pour ne rien perdre de lignes
 """
 
 import pandas as pd
@@ -17,9 +17,9 @@ class DataCleaner:
 
         df = self._clean_dates(df)
         df = self._clean_amounts(df)
-        df = self._merge_multi_line_libelles_conservative(df)   # Version prudente
+        df = self._merge_multi_line_libelles_very_conservative(df)   # Version ultra prudente
         df = self._clean_libelle(df)
-        df = self._remove_duplicates_minimal(df)                # Très léger
+        df = self._remove_duplicates_ultra_minimal(df)               # Presque pas de suppression
         df = self._sort_by_date(df)
         df = self._post_process_by_bank(df, banque_nom)
 
@@ -62,37 +62,36 @@ class DataCleaner:
         except:
             return None
 
-    # ====================== FUSION LIBELLÉS (VERSION CONSERVATRICE) ======================
-    def _merge_multi_line_libelles_conservative(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Fusion très prudente : seulement si la ligne suivante est clairement une continuation"""
+    # ====================== FUSION TRÈS CONSERVATRICE ======================
+    def _merge_multi_line_libelles_very_conservative(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Fusion minimale : seulement si la ligne est clairement une continuation sans rien d'autre"""
         if 'Libellé' not in df.columns or df.empty:
             return df
 
         df = df.reset_index(drop=True)
         result = []
+
         i = 0
         while i < len(df):
-            current_lib = str(df.iloc[i].get('Libellé', '')).strip()
-            current_row = df.iloc[i].copy()
+            row = df.iloc[i].copy()
+            libelle = str(row.get('Libellé', '')).strip()
 
-            # Vérifier si les lignes suivantes sont des continuations (pas de date + pas de montant)
-            j = i + 1
-            while j < len(df):
-                next_row = df.iloc[j]
+            # On regarde seulement la ligne suivante
+            if i + 1 < len(df):
+                next_row = df.iloc[i + 1]
                 next_lib = str(next_row.get('Libellé', '')).strip()
-                has_date = bool(str(next_row.get('Date', '')).strip())
-                has_amount = (pd.notna(next_row.get('Débit')) and next_row.get('Débit') != 0) or \
-                             (pd.notna(next_row.get('Crédit')) and next_row.get('Crédit') != 0)
+                next_has_date = bool(str(next_row.get('Date', '')).strip())
+                next_has_amount = (pd.notna(next_row.get('Débit')) and next_row.get('Débit') != 0) or \
+                                  (pd.notna(next_row.get('Crédit')) and next_row.get('Crédit') != 0)
 
-                if not has_date and not has_amount and next_lib:
-                    current_lib = f"{current_lib} {next_lib}".strip()
-                    j += 1
-                else:
-                    break
+                # Si la ligne suivante n'a ni date ni montant → c'est probablement une continuation
+                if not next_has_date and not next_has_amount and next_lib:
+                    libelle = f"{libelle} {next_lib}".strip()
+                    i += 1  # On saute la ligne de continuation
 
-            current_row['Libellé'] = current_lib
-            result.append(current_row)
-            i = j
+            row['Libellé'] = libelle
+            result.append(row)
+            i += 1
 
         return pd.DataFrame(result)
 
@@ -103,18 +102,19 @@ class DataCleaner:
                 .astype(str)
                 .str.replace(r'\s+', ' ', regex=True)
                 .str.strip()
-                .str.replace(r'(?i)remettant\s*:?\s*', '', regex=True)
             )
         return df
 
     # ====================== DÉDUPLICATION MINIMALE ======================
-    def _remove_duplicates_minimal(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Ne supprime que les lignes complètement identiques"""
+    def _remove_duplicates_ultra_minimal(self, df: pd.DataFrame) -> pd.DataFrame:
+        """On ne supprime que les lignes 100% identiques (Date + Réf + Libellé + Débit + Crédit)"""
         if df.empty:
             return df
 
-        # On considère une ligne comme doublon seulement si TOUT est identique
-        df = df.drop_duplicates(keep='first')
+        subset = ['Date', 'Référence', 'Libellé', 'Débit', 'Crédit']
+        subset = [c for c in subset if c in df.columns]
+
+        df = df.drop_duplicates(subset=subset, keep='first')
         return df
 
     def _sort_by_date(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -132,11 +132,6 @@ class DataCleaner:
         if banque_nom == "UNICS":
             if 'Particulars' in df.columns:
                 df = df.rename(columns={'Particulars': 'Libellé'})
-        elif banque_nom in ["CEPAC", "ADVANS"]:
-            for old_col in ['Désignation', "Libellé de l'opération"]:
-                if old_col in df.columns:
-                    df = df.rename(columns={old_col: 'Libellé'})
-                    break
         return df
 
     # ====================== STATISTIQUES ======================
