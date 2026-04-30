@@ -48,15 +48,15 @@ BANK_CONFIGS: Dict[str, BankConfig] = {
         specific_instructions="""BGFI : Colonne 'N° Pièce' fréquente. Frais toujours en Débit."""
     ),
 
-    "UNICS": BankConfig(
+       "UNICS": BankConfig(
         nom="UNICS",
         code="UNICS",
         emoji="🏦",
         col_ref=["Cheq#", "Référence"],
         col_libelle=["Particulars"],
-        specific_instructions="""UNICS : Très important ! Les montants sont écrits avec virgule comme séparateur de milliers (ex: 903,413.00). 
-Retourne les montants **sans virgule ni espace**, uniquement des chiffres (ex: 903413). 
-Ne multiplie jamais les montants par 100. Le solde d'ouverture est souvent "Opening Balance"."""
+        specific_instructions="""UNICS : Extraire **TOUTES** les lignes du tableau, une par une, sans en sauter aucune, même si les libellés se ressemblent. 
+Les montants doivent être retournés sans virgule ni espace (ex: 308000 au lieu de 308,000). 
+Le solde d'ouverture est "Opening Balance". Ne jamais sauter de ligne."""
     ),
 
     "CEPAC": BankConfig(
