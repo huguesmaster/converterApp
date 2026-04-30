@@ -1,5 +1,6 @@
 """
 extractor_gemini.py - Version 4.2
+Correction critique des montants + robustesse
 """
 
 import google.generativeai as genai
@@ -21,7 +22,6 @@ from bank_configs import get_bank_config, BankConfig
 
 
 class DebugLogger:
-    """Logger simple et robuste"""
     LEVELS = {
         "INFO": "ℹ️", "SUCCESS": "✅", "WARNING": "⚠️", "ERROR": "❌",
         "DEBUG": "🔍", "STEP": "▶️", "DATA": "📊", "API": "🤖",
@@ -37,13 +37,7 @@ class DebugLogger:
     def _log(self, level: str, msg: str, detail: str = ""):
         icon = self.LEVELS.get(level, "•")
         ts = time.strftime("%H:%M:%S")
-        entry = {
-            "level": level,
-            "icon": icon,
-            "message": str(msg),
-            "detail": str(detail),
-            "timestamp": ts,
-        }
+        entry = {"level": level, "icon": icon, "message": str(msg), "detail": str(detail), "timestamp": ts}
         self.logs.append(entry)
         if self.verbose:
             print(f"[{ts}] {icon} {msg}")
@@ -71,7 +65,6 @@ class DebugLogger:
         self._log("DATA", label, val_str)
     def api(self, msg, detail=""): self._log("API", msg, detail)
 
-    # Méthodes utilisées dans app.py
     def get_logs_as_text(self) -> str:
         lines = []
         for log in self.logs:
@@ -89,7 +82,6 @@ class DebugLogger:
             "errors": len(self.errors),
             "warnings": len(self.warnings),
             "steps": self._step,
-            "has_errors": len(self.errors) > 0,
         }
 
     def get_entries(self) -> list:
@@ -121,7 +113,7 @@ class GeminiExtractor:
             self.model = genai.GenerativeModel(
                 model_name="gemini-2.5-flash-lite",
                 generation_config=genai.GenerationConfig(
-                    temperature=0, top_p=1, top_k=1, max_output_tokens=8192
+                    temperature=0, top_p=1, top_k=1, max_output_tokens=8192,
                 ),
                 safety_settings=[
                     {"category": cat, "threshold": "BLOCK_NONE"}
@@ -129,7 +121,7 @@ class GeminiExtractor:
                                 "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT"]
                 ],
             )
-            self.logger.success("Gemini configuré avec succès", f"Banque: {self.banque_nom} | Mode: {self.mode}")
+            self.logger.success("Gemini configuré", f"Banque: {self.banque_nom} | Mode: {self.mode}")
         except Exception as e:
             self.logger.error("Échec configuration Gemini", exc=e)
             raise
@@ -167,14 +159,16 @@ class GeminiExtractor:
 - Crédit : {", ".join(c.col_credit)}
 - Solde : {", ".join(c.col_solde)}
 
-**Instructions spécifiques** :
+**Instructions spécifiques pour {c.nom}** :
 {c.specific_instructions}
 
-**Règles strictes** :
-1. Fusionne les lignes de libellé qui se suivent sans montant ni date.
+**Règles STRICTES** :
+1. Fusionne les libellés sur plusieurs lignes consécutives sans montant ni date.
 2. Ne jamais inverser Débit et Crédit.
-3. Montants : supprime les espaces (ex: "24 553 342" → 24553342). Utilise null si vide.
-4. Retourne UNIQUEMENT le JSON ci-dessous :
+3. **Montants** : Retourne toujours les montants **sans virgule ni espace** (ex: 903413 au lieu de 903,413.00). 
+   Ne multiplie jamais par 100.
+4. Inclu les soldes d'ouverture et de clôture.
+5. Retourne UNIQUEMENT le JSON suivant :
 
 {json_example}
 """
@@ -192,8 +186,8 @@ class GeminiExtractor:
 
     def _extract_vision(self, pdf_bytes: bytes) -> pd.DataFrame:
         if not PDF2IMAGE_AVAILABLE:
-            self.logger.error("pdf2image non installé")
-            return pd.DataFrame()
+            self.logger.error("pdf2image non disponible")
+            return self._empty_df()
 
         self._update_progress(10, "Conversion PDF en images...")
         try:
@@ -201,25 +195,24 @@ class GeminiExtractor:
             self.logger.success(f"{len(images)} images générées")
         except Exception as e:
             self.logger.error("Échec conversion PDF", exc=e)
-            return pd.DataFrame()
+            return self._empty_df()
 
         prompt = self._build_prompt(is_vision=True)
         all_transactions = []
 
         for idx, image in enumerate(images, 1):
-            self._update_progress(15 + int(70 * idx / len(images)), f"Analyse page {idx}/{len(images)}...")
+            self._update_progress(15 + int(70 * idx / len(images)), f"Analyse page {idx}/{len(images)}")
             transactions = self._call_vision_single_page(image, idx, prompt)
             all_transactions.extend(transactions)
 
-        df = self._build_dataframe(all_transactions)
-        return df
+        return self._build_dataframe(all_transactions)
 
     def _call_vision_single_page(self, image: Image.Image, page_num: int, prompt: str) -> List[Dict]:
         optimized = self._optimize_image(image)
         for attempt in range(1, 4):
             try:
                 response = self.model.generate_content([prompt, optimized], request_options={"timeout": 90})
-                raw_text = response.text if hasattr(response, "text") else ""
+                raw_text = response.text if hasattr(response, "text") and response.text else ""
                 if not raw_text and hasattr(response, "candidates"):
                     raw_text = response.candidates[0].content.parts[0].text
                 return self._parse_response(raw_text, f"page {page_num}")
@@ -238,7 +231,7 @@ class GeminiExtractor:
         return image
 
     def _extract_hybrid(self, pdf_bytes: bytes) -> pd.DataFrame:
-        self.logger.warning("Mode Hybride non implémenté → utilisation de Vision")
+        self.logger.warning("Mode Hybride → basculement vers Vision")
         return self._extract_vision(pdf_bytes)
 
     def _parse_response(self, raw: str, context: str) -> List[Dict]:
@@ -263,22 +256,32 @@ class GeminiExtractor:
             "reference": str(t.get("reference", "")).strip(),
             "libelle": libelle,
             "date_valeur": str(t.get("date_valeur", "")).strip()[:10],
-            "debit": self._to_float(t.get("debit")),
-            "credit": self._to_float(t.get("credit")),
-            "solde": self._to_float(t.get("solde")),
+            "debit": self._fmt_amount(t.get("debit")),
+            "credit": self._fmt_amount(t.get("credit")),
+            "solde": self._fmt_amount(t.get("solde")),
         }
 
-    def _to_float(self, val) -> Optional[float]:
-        if val is None or str(val).lower() in ("null", "none", ""):
+    def _fmt_amount(self, val) -> Optional[float]:
+        """Version robuste pour gérer les montants avec virgules (format camerounais)"""
+        if val is None or str(val).lower() in ("null", "none", "", "0"):
             return None
         try:
-            return float(re.sub(r"[^\d.]", "", str(val).replace(" ", "")))
-        except:
+            s = str(val).strip()
+            # Supprime tout sauf chiffres, point et virgule
+            s = re.sub(r"[^\d.,-]", "", s)
+            # Remplace virgule par point
+            s = s.replace(",", ".")
+            # Si plusieurs points → c'est un séparateur de milliers → on le supprime
+            if s.count('.') > 1:
+                s = s.replace(".", "")
+            return float(s) if s else None
+        except Exception:
             return None
 
     def _build_dataframe(self, transactions: List[Dict]) -> pd.DataFrame:
         if not transactions:
-            return pd.DataFrame(columns=["Date", "Référence", "Libellé", "Date_Valeur", "Débit", "Crédit", "Solde"])
+            return self._empty_df()
+
         return pd.DataFrame([{
             "Date": t["date"],
             "Référence": t["reference"],
@@ -289,7 +292,10 @@ class GeminiExtractor:
             "Solde": t["solde"],
         } for t in transactions])
 
-    # Méthodes attendues par app.py
+    def _empty_df(self) -> pd.DataFrame:
+        return pd.DataFrame(columns=["Date", "Référence", "Libellé", "Date_Valeur", "Débit", "Crédit", "Solde"])
+
+    # Méthodes publiques appelées par app.py
     def get_debug_logs(self) -> str:
         return self.logger.get_logs_as_text()
 
