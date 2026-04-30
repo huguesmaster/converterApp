@@ -48,15 +48,22 @@ BANK_CONFIGS: Dict[str, BankConfig] = {
         specific_instructions="""BGFI : Colonne 'N° Pièce' fréquente. Frais toujours en Débit."""
     ),
 
-       "UNICS": BankConfig(
+           "UNICS": BankConfig(
         nom="UNICS",
         code="UNICS",
         emoji="🏦",
         col_ref=["Cheq#", "Référence"],
         col_libelle=["Particulars"],
-        specific_instructions="""UNICS : Extraire **TOUTES** les lignes du tableau, une par une, sans en sauter aucune, même si les libellés se ressemblent. 
-Les montants doivent être retournés sans virgule ni espace (ex: 308000 au lieu de 308,000). 
-Le solde d'ouverture est "Opening Balance". Ne jamais sauter de ligne."""
+        specific_instructions="""UNICS : Tu dois extraire **ABSOLUMENT TOUTES** les lignes du tableau, sans exception.
+
+Particulièrement important :
+- La ligne du 03/03/2025 avec débit 308000 : "WDL chq no. 483387 fv NDEUMA GISCARD DESTAING 01032025"
+- Toutes les lignes commençant par "WDL chq no."
+- Toutes les lignes de "CASH CREDIT BY"
+
+Ne saute aucune ligne contenant un montant en Débit ou Crédit. 
+Retourne les montants sans virgule ni espace (ex: 308000 au lieu de 308,000). 
+Sois extrêmement exhaustif sur toutes les  pages du document."""
     ),
 
     "CEPAC": BankConfig(
