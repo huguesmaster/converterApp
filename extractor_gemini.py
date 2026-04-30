@@ -132,6 +132,7 @@ class GeminiExtractor:
 
     def _build_prompt(self, is_vision: bool = True) -> str:
         c = self.config
+
         json_example = '''
 {
   "transactions": [
@@ -148,33 +149,34 @@ class GeminiExtractor:
 }
 '''
 
-        prompt = f"""Tu es un expert comptable spécialisé dans les relevés bancaires camerounais de **{c.nom}**.
+        prompt = f"""Tu es un expert comptable très rigoureux spécialisé dans les relevés UNICS et autres banques camerounaises.
 
-**Colonnes attendues** :
-- Date : {", ".join(c.col_date)}
-- Référence : {", ".join(c.col_ref)}
-- Libellé (multi-lignes possible) : {", ".join(c.col_libelle)}
-- Date Valeur : {", ".join(c.col_date_valeur)}
-- Débit : {", ".join(c.col_debit)}
-- Crédit : {", ".join(c.col_credit)}
-- Solde : {", ".join(c.col_solde)}
+**MISSION CRITIQUE** : Extraire **TOUTES** les lignes du tableau visibles sur l'image, **sans en sauter aucune**, même si elles sont similaires ou longues.
 
-**Instructions spécifiques pour {c.nom}** :
+**Colonnes** :
+- Date
+- Référence / Cheq#
+- Libellé / Particulars (peut être sur plusieurs lignes)
+- Date Valeur
+- Débit
+- Crédit
+- Solde
+
+**Instructions pour {c.nom}** :
 {c.specific_instructions}
 
-**Règles STRICTES** :
-1. Fusionne les libellés sur plusieurs lignes consécutives sans montant ni date.
-2. Ne jamais inverser Débit et Crédit.
-3. **Montants** : Retourne toujours les montants **sans virgule ni espace** (ex: 903413 au lieu de 903,413.00). 
-   Ne multiplie jamais par 100.
-4. Inclu les soldes d'ouverture et de clôture.
-5. Retourne UNIQUEMENT le JSON suivant :
+**Règles NON NÉGOCIABLES** :
+1. Tu dois lister **chaque ligne de transaction** une par une, du haut vers le bas.
+2. Ne jamais sauter une ligne qui contient un montant en Débit ou Crédit.
+3. Si une ligne a un libellé long commençant par "WDL chq no." ou "CASH CREDIT BY", tu dois l'inclure intégralement.
+4. Montants : retourne uniquement des chiffres sans virgule ni espace (ex: 308000, 903413).
+5. Retourne **uniquement** le JSON suivant, sans aucun commentaire :
 
 {json_example}
 """
 
         if not is_vision:
-            prompt += "\nLe texte provient de pdfplumber et peut contenir du bruit. Ignore les en-têtes et pieds de page."
+            prompt += "\nLe texte est extrait via pdfplumber. Sois exhaustif et ne saute aucune ligne du tableau."
 
         return prompt
 
