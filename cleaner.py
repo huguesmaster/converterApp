@@ -1,6 +1,6 @@
 """
-cleaner.py - Nettoyage avancé des relevés bancaires camerounais
-Version 4.2 - Optimisé pour fusion libellés + correction montants
+cleaner.py - Version 4.3
+Correction : Meilleure gestion des lignes similaires + fidélité des montants
 """
 
 import pandas as pd
@@ -8,24 +8,18 @@ import numpy as np
 import re
 from typing import Optional
 
-
 class DataCleaner:
-    """
-    Nettoyage et post-traitement des données extraites par Gemini.
-    """
-
     def clean(self, df: pd.DataFrame, banque_nom: str = "Autre banque") -> pd.DataFrame:
-        """Pipeline complet de nettoyage."""
         if df.empty:
             return df
 
         df = df.copy()
 
         df = self._clean_dates(df)
-        df = self._clean_amounts(df)           # Correction critique des montants
-        df = self._merge_multi_line_libelles(df)  # Fusion intelligente
+        df = self._clean_amounts(df)
+        df = self._merge_multi_line_libelles(df)
         df = self._clean_libelle(df)
-        df = self._remove_duplicates(df)
+        df = self._remove_duplicates_improved(df)   # Version améliorée
         df = self._sort_by_date(df)
         df = self._post_process_by_bank(df, banque_nom)
 
@@ -46,63 +40,53 @@ class DataCleaner:
             return s[:10]
         return s
 
-    # ====================== MONTANTS (Correction critique) ======================
+    # ====================== MONTANTS ======================
     def _clean_amounts(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Nettoie et convertit correctement les montants (gère virgules de milliers)"""
         for col in ['Débit', 'Crédit', 'Solde']:
             if col in df.columns:
                 df[col] = df[col].apply(self._parse_amount)
         return df
 
     def _parse_amount(self, val) -> Optional[float]:
-        """Parse robuste des montants camerounais (ex: 903,413.00 → 903413.00)"""
         if val is None or pd.isna(val):
             return None
         s = str(val).strip()
         if s.lower() in ('null', 'none', '', '0'):
             return None
-
         try:
-            # Supprime tout sauf chiffres, point et virgule
             s = re.sub(r'[^\d.,-]', '', s)
-            # Remplace virgule française par point
             s = s.replace(',', '.')
-            # Si plusieurs points → séparateurs de milliers → on les supprime
             if s.count('.') > 1:
                 s = s.replace('.', '')
             return float(s) if s else None
         except:
             return None
 
-    # ====================== FUSION LIBELLÉS MULTI-LIGNES ======================
+    # ====================== FUSION LIBELLÉS ======================
     def _merge_multi_line_libelles(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Fusionne intelligemment les libellés sur plusieurs lignes"""
         if 'Libellé' not in df.columns or df.empty:
             return df
 
         df = df.reset_index(drop=True)
         merged = []
-        current_libelle = ""
+        current = ""
 
         for _, row in df.iterrows():
-            libelle = str(row.get('Libellé', '')).strip()
+            lib = str(row.get('Libellé', '')).strip()
             has_date = bool(str(row.get('Date', '')).strip())
             has_debit = pd.notna(row.get('Débit')) and row.get('Débit') != 0
             has_credit = pd.notna(row.get('Crédit')) and row.get('Crédit') != 0
 
-            # Ligne de continuation (pas de date, pas de montant)
-            if not has_date and not has_debit and not has_credit and libelle:
-                current_libelle = f"{current_libelle} {libelle}".strip() if current_libelle else libelle
+            if not has_date and not has_debit and not has_credit and lib:
+                current = f"{current} {lib}".strip() if current else lib
             else:
-                # Sauvegarde du libellé accumulé
-                if current_libelle:
-                    merged[-1] = current_libelle
-                merged.append(libelle)
-                current_libelle = ""
+                if current:
+                    merged[-1] = current
+                merged.append(lib)
+                current = ""
 
-        # Dernière ligne
-        if current_libelle and merged:
-            merged[-1] = current_libelle
+        if current and merged:
+            merged[-1] = current
 
         df['Libellé'] = merged
         return df
@@ -114,16 +98,21 @@ class DataCleaner:
                 .astype(str)
                 .str.replace(r'\s+', ' ', regex=True)
                 .str.strip()
-                .str.replace(r'(?i)remettant\s*:?\s*', '', regex=True)   # Nettoyage MUPECI/ADVANS
-                .str.replace(r'^None$', '', regex=True)
+                .str.replace(r'(?i)remettant\s*:?\s*', '', regex=True)
             )
         return df
 
-    def _remove_duplicates(self, df: pd.DataFrame) -> pd.DataFrame:
-        subset = ['Date', 'Référence', 'Libellé']
+    # ====================== DÉDUPLICATION AMÉLIORÉE ======================
+    def _remove_duplicates_improved(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Déduplication plus souple : on ne supprime que les lignes totalement identiques"""
+        if df.empty:
+            return df
+
+        # On garde les lignes de soldes même si elles se ressemblent
+        subset = ['Date', 'Référence', 'Libellé', 'Débit', 'Crédit']
         subset = [c for c in subset if c in df.columns]
-        if subset:
-            df = df.drop_duplicates(subset=subset, keep='first')
+
+        df = df.drop_duplicates(subset=subset, keep='first')
         return df
 
     def _sort_by_date(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -133,23 +122,19 @@ class DataCleaner:
             df['_date_sort'] = pd.to_datetime(df['Date'], format='%d/%m/%Y', errors='coerce')
             df = df.sort_values('_date_sort', na_position='first')
             df = df.drop(columns=['_date_sort'])
-        except Exception:
+        except:
             pass
         return df.reset_index(drop=True)
 
-    # ====================== POST-PROCESSING PAR BANQUE ======================
     def _post_process_by_bank(self, df: pd.DataFrame, banque_nom: str) -> pd.DataFrame:
         if banque_nom == "UNICS":
-            if 'Particulars' in df.columns and 'Libellé' not in df.columns:
+            if 'Particulars' in df.columns:
                 df = df.rename(columns={'Particulars': 'Libellé'})
         elif banque_nom in ["CEPAC", "ADVANS"]:
-            for old_col in ['Désignation', "Libellé de l'opération"]:
-                if old_col in df.columns:
-                    df = df.rename(columns={old_col: 'Libellé'})
+            for old in ['Désignation', "Libellé de l'opération"]:
+                if old in df.columns:
+                    df = df.rename(columns={old: 'Libellé'})
                     break
-        elif banque_nom == "MUPECI":
-            if 'Libellé' in df.columns:
-                df['Libellé'] = df['Libellé'].str.replace(r'(?i)remettant\s*:?', '', regex=True)
         return df
 
     # ====================== STATISTIQUES ======================
@@ -170,7 +155,7 @@ class DataCleaner:
 
         lib_lower = df.get('Libellé', pd.Series('')).astype(str).str.lower()
 
-        mask_ouv = lib_lower.str.contains('ouverture|opening|report solde antérieur|solde debut', na=False)
+        mask_ouv = lib_lower.str.contains('ouverture|opening|report solde antérieur', na=False)
         mask_clo = lib_lower.str.contains('cl[ôo]ture|cloture|solde final|solde crediteur|total mouvements', na=False)
 
         normal_df = df[~(mask_ouv | mask_clo)]
@@ -180,7 +165,6 @@ class DataCleaner:
         stats['total_debit'] = float(normal_df.get('Débit', pd.Series(0)).sum(skipna=True) or 0)
         stats['net'] = stats['total_credit'] - stats['total_debit']
 
-        # Soldes
         if mask_ouv.any():
             val = df.loc[mask_ouv, 'Solde'].dropna()
             if not val.empty:
@@ -191,7 +175,6 @@ class DataCleaner:
             if not val.empty:
                 stats['solde_cloture'] = float(val.iloc[-1])
 
-        # Période
         dates = pd.to_datetime(df.get('Date'), format='%d/%m/%Y', errors='coerce').dropna()
         if not dates.empty:
             stats['periode_debut'] = dates.min().strftime('%d/%m/%Y')
