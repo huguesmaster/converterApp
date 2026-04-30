@@ -111,7 +111,7 @@ class GeminiExtractor:
         try:
             genai.configure(api_key=self.api_key)
             self.model = genai.GenerativeModel(
-                model_name="gemini-3.1-flash-lite-preview",
+                model_name="gemini-2.5-flash",
                 generation_config=genai.GenerationConfig(
                     temperature=0, top_p=1, top_k=1, max_output_tokens=8192,
                 ),
